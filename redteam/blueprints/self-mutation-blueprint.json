@@ -37,12 +37,17 @@
       }
     ],
     "generation": {
-      "paraphrasesPerFamily": 5,
-      "wrappersPerFamily": 3,
-      "slangPerFamily": 2,
-      "combinedPerFamily": 1,
-      "multiTurnVariants": 1,
-      "randomMutationsPerFamily": 4
+      "paraphrasesPerFamily": 6,
+      "wrappersPerFamily": 12,
+      "slangPerFamily": 10,
+      "combinedPerFamily": 8,
+      "sarcasmMaskingPerFamily": 12,
+      "contradictionInjectionPerFamily": 12,
+      "fictionShieldPerFamily": 12,
+      "thirdPersonDistancingPerFamily": 12,
+      "partialDenialDangerousAskPerFamily": 12,
+      "multiTurnVariants": 3,
+      "randomMutationsPerFamily": 40
     }
   },
   "families": [

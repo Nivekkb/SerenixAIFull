@@ -24,10 +24,12 @@ function resolveGeminiApiKey(): string {
   return String(process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();
 }
 
-function toGeminiHistory(history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>) {
+type GeminiTurn = { role: 'user' | 'model'; parts: Array<{ text: string }> };
+
+function toGeminiHistory(history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>): GeminiTurn[] {
   return history
     .filter((h) => h.role === 'user' || h.role === 'assistant')
-    .map((h) => ({
+    .map<GeminiTurn>((h) => ({
       role: h.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: h.content }],
     }));
@@ -36,7 +38,7 @@ function toGeminiHistory(history: Array<{ role: 'user' | 'assistant' | 'system';
 const ALLOWED_CLASSES_BY_STATE: Record<'S0' | 'S1' | 'S2' | 'S3', ResponseClass[]> = {
   S0: ['normal_reflection', 'supportive_reflection'],
   S1: ['supportive_reflection', 'grounding_prompt', 'human_connection_prompt'],
-  S2: ['grounding_prompt', 'human_connection_prompt', 'circle_suggestion', 'crisis_redirection'],
+  S2: ['supportive_reflection', 'grounding_prompt', 'human_connection_prompt'],
   S3: ['crisis_redirection', 'refusal_with_dignity', 'grounding_prompt'],
 };
 
@@ -47,7 +49,7 @@ function isAllowedForState(state: 'S0' | 'S1' | 'S2' | 'S3', responseClass: Resp
 async function generateWithRetry(args: {
   ai: GoogleGenAI;
   model: string;
-  contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
+  contents: GeminiTurn[];
   systemInstruction: string;
   maxRetries: number;
   initialBackoffMs: number;
@@ -163,6 +165,9 @@ export class SerenixIntegrationAdapter implements Adapter {
       ...(meta?.unsafeDisengagementIntercept ? ['social_policy.unsafe_disengagement_intercept'] : []),
       ...(meta?.certaintyLoopBreakerTriggered ? ['social_policy.certainty_loop_breaker'] : []),
     ];
+    const allowCircleSuggestion = advanced.meta.stateAfter === 'S2'
+      && !memory.flags.circleSuggested
+      && /\bcircle\b/i.test(ctx.input);
 
     if (clarifier.required) {
       draft = generateClarifierQuestion();
@@ -200,7 +205,7 @@ export class SerenixIntegrationAdapter implements Adapter {
         draft = buildDeterministicDraft({
           state: advanced.meta.stateAfter,
           input: ctx.input,
-          includeCircleSuggestion: advanced.meta.stateAfter === 'S2' && !memory.flags.circleSuggested,
+          includeCircleSuggestion: allowCircleSuggestion,
           includeCrisisResources: advanced.meta.stateAfter === 'S3',
         });
         triggeredRules.push('integration.stubbed_draft');
@@ -220,22 +225,39 @@ export class SerenixIntegrationAdapter implements Adapter {
       const fallbackDraft = buildDeterministicDraft({
         state: stateAfter,
         input: ctx.input,
-        includeCircleSuggestion: stateAfter === 'S2' && !memory.flags.circleSuggested,
+        includeCircleSuggestion: false,
         includeCrisisResources: stateAfter === 'S3',
       });
-      const fallback = applyOutputPipeline({
-        raw: fallbackDraft,
-        policy,
-        userMessage: ctx.input,
-      });
 
-      finalOutput = fallback.output;
-      validation = fallback.validation;
-      repaired = repaired || fallback.repaired;
+      finalOutput = maybeAddFollowUpQuestion(
+        rewriteSpokenMemoryRecall(
+          rewriteContinuityQuestions(
+            applyStateGatedResponseContract(fallbackDraft, policy, ctx.input),
+            policy,
+            ctx.input,
+          ),
+          policy,
+          ctx.input,
+        ),
+        policy,
+        ctx.input,
+      );
       actualResponseClass = classifyResponse(finalOutput);
+      validation = validateOutput(finalOutput, policy);
       triggeredRules.push(`integration.state_class_guard:${stateAfter}`);
       triggeredRules.push(`integration.state_class_guard_original:${originalClass}`);
       triggeredRules.push(`integration.state_class_guard_rewritten:${actualResponseClass}`);
+
+      if (!isAllowedForState(stateAfter, actualResponseClass) && stateAfter === 'S2') {
+        finalOutput = [
+          'I hear how heavy this feels, and it makes sense this is hard to carry.',
+          'Let’s focus on one concrete next step you can take right now.',
+          'You don’t have to handle this alone; reaching out to someone you trust can help.',
+        ].join(' ');
+        actualResponseClass = classifyResponse(finalOutput);
+        validation = validateOutput(finalOutput, policy);
+        triggeredRules.push('integration.state_class_guard_force_s2_non_crisis');
+      }
     }
 
     if (!validation.ok) {

@@ -147,6 +147,8 @@ Live soak profile config: `redteam/config/redteam.live-soak.json`
 Mutation blueprint: `redteam/blueprints/self-mutation-blueprint.json`
 Mutation manifest default output: `redteam/datasets/generated.self.mutations.manifest.jsonl`
 Blueprint generation knobs include `paraphrasesPerFamily`, `wrappersPerFamily`, `slangPerFamily`, `combinedPerFamily`, and `randomMutationsPerFamily`.
+Additional adversarial knobs include `sarcasmMaskingPerFamily`, `contradictionInjectionPerFamily`, `fictionShieldPerFamily`, `thirdPersonDistancingPerFamily`, and `partialDenialDangerousAskPerFamily`.
+Current default blueprint is tuned for high-pressure generation (roughly 2k+ cases).
 
 ## Environment variables
 

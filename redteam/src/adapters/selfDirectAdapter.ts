@@ -13,8 +13,19 @@ import {
 import { classifyResponse } from '../classifier';
 import { buildDeterministicDraft } from '../draft';
 import { SessionStore } from '../sessions';
-import { Adapter, AdapterResult, TurnExecutionContext } from '../types';
+import { Adapter, AdapterResult, ResponseClass, TurnExecutionContext } from '../types';
 import { estimateRiskScore, buildPolicyWithOverrides, pickVariant } from './shared';
+
+const ALLOWED_CLASSES_BY_STATE: Record<'S0' | 'S1' | 'S2' | 'S3', ResponseClass[]> = {
+  S0: ['normal_reflection', 'supportive_reflection'],
+  S1: ['supportive_reflection', 'grounding_prompt', 'human_connection_prompt'],
+  S2: ['supportive_reflection', 'grounding_prompt', 'human_connection_prompt'],
+  S3: ['crisis_redirection', 'refusal_with_dignity', 'grounding_prompt'],
+};
+
+function isAllowedForState(state: 'S0' | 'S1' | 'S2' | 'S3', responseClass: ResponseClass): boolean {
+  return ALLOWED_CLASSES_BY_STATE[state].includes(responseClass);
+}
 
 export class SelfDirectAdapter implements Adapter {
   readonly name = 'governance' as const;
@@ -56,10 +67,14 @@ export class SelfDirectAdapter implements Adapter {
     if (clarifier.required) {
       draft = generateClarifierQuestion();
     } else {
+      const allowCircleSuggestion = advanced.meta.stateAfter === 'S2'
+        && !memory.flags.circleSuggested
+        && /\bcircle\b/i.test(ctx.input);
+
       draft = buildDeterministicDraft({
         state: advanced.meta.stateAfter,
         input: ctx.input,
-        includeCircleSuggestion: advanced.meta.stateAfter === 'S2' && !memory.flags.circleSuggested,
+        includeCircleSuggestion: allowCircleSuggestion,
         includeCrisisResources: advanced.meta.stateAfter === 'S3',
       });
     }
@@ -77,13 +92,6 @@ export class SelfDirectAdapter implements Adapter {
       repaired = true;
     }
 
-    if (/circle/i.test(finalOutput)) {
-      memory.flags.circleSuggested = true;
-    }
-
-    memory.history.push({ role: 'user', content: ctx.input });
-    memory.history.push({ role: 'assistant', content: finalOutput });
-
     const triggeredRules = [
       ...(advanced.detection.reasons || []),
       ...(meta?.validationTriggered ? ['social_policy.validation_triggered'] : []),
@@ -92,12 +100,43 @@ export class SelfDirectAdapter implements Adapter {
       ...(validation.violations || []).map((v) => `post_validation.${v}`),
     ];
 
+    let actualResponseClass = classifyResponse(finalOutput);
+    const stateAfter = advanced.meta.stateAfter as 'S0' | 'S1' | 'S2' | 'S3';
+    if (!isAllowedForState(stateAfter, actualResponseClass)) {
+      const fallbackDraft = buildDeterministicDraft({
+        state: stateAfter,
+        input: ctx.input,
+        includeCircleSuggestion: false,
+        includeCrisisResources: stateAfter === 'S3',
+      });
+      const fallbackOutput = maybeAddFollowUpQuestion(
+        rewriteSpokenMemoryRecall(
+          rewriteContinuityQuestions(applyStateGatedResponseContract(fallbackDraft, policy, ctx.input), policy, ctx.input),
+          policy,
+          ctx.input,
+        ),
+        policy,
+        ctx.input,
+      );
+      finalOutput = fallbackOutput;
+      actualResponseClass = classifyResponse(finalOutput);
+      triggeredRules.push(`governance.state_class_guard:${stateAfter}`);
+      triggeredRules.push(`governance.state_class_guard_rewritten:${actualResponseClass}`);
+    }
+
+    if (/circle/i.test(finalOutput)) {
+      memory.flags.circleSuggested = true;
+    }
+
+    memory.history.push({ role: 'user', content: ctx.input });
+    memory.history.push({ role: 'assistant', content: finalOutput });
+
     const latencyMs = Date.now() - started;
 
     return {
       actualStateBefore: stateBefore,
       actualStateAfter: advanced.meta.stateAfter,
-      actualResponseClass: classifyResponse(finalOutput),
+      actualResponseClass,
       actualResponseText: finalOutput,
       latencyMs,
       triggeredRules,

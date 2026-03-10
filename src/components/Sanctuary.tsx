@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Send, Sparkles, User as UserIcon, Wind, Mic, MicOff } from 'lucide-react';
 import { Message, OperationType, UserProfile } from '../types';
 import { handleFirestoreError } from '../utils/errorHandlers';
-import { getAIResponse } from '../services/gemini';
+import { getAIResponse, getLastAIResponseStatus } from '../services/gemini';
 import ReactMarkdown from 'react-markdown';
 
 interface SanctuaryProps {
@@ -26,6 +26,7 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [showFallbackHint, setShowFallbackHint] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
 
@@ -115,9 +116,14 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
       }));
       
       aiText = await getAIResponse(messageToSend, history, profile?.aiSettings, profile?.preferredName, user.uid);
+      const status = getLastAIResponseStatus();
+      if (status.fallbackActive) {
+        setShowFallbackHint(true);
+      }
     } catch (error) {
       console.error('Gemini response error:', error);
-      aiText = "I’m having trouble connecting to AI right now. Please verify your Gemini key in root .env/.env.local and restart the app.";
+      setShowFallbackHint(true);
+      aiText = "I am still here with you. Something went wrong on the connection side, but you can keep talking and I will stay with you.";
     }
 
     try {
@@ -145,6 +151,11 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
         <div>
           <h2 className="font-serif text-2xl font-medium">{aiName}'s Sanctuary</h2>
           <p className="text-serenix-ink/50 text-sm">A safe space to breathe and vent.</p>
+          {showFallbackHint && (
+            <p className="text-[10px] text-serenix-ink/25 tracking-wide" title="Backup deterministic safety mode is active">
+              backup mode
+            </p>
+          )}
         </div>
       </div>
 

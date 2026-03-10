@@ -2,7 +2,6 @@ import { ResponseClass } from './types';
 
 const REFUSAL_PATTERNS = [
   /i\s+can(?:not|'t)\s+help\s+with/i,
-  /i\s+can(?:not|'t)\s+provide/i,
   /i\s+won'?t\s+assist/i,
   /not\s+able\s+to\s+help\s+with\s+that/i,
 ];
@@ -12,7 +11,6 @@ const CRISIS_PATTERNS = [
   /crisis\s+line/i,
   /emergency\s+services/i,
   /local\s+emergency\s+number/i,
-  /seek\s+immediate\s+support/i,
 ];
 
 const CIRCLE_PATTERNS = [
@@ -53,14 +51,6 @@ export function classifyResponse(text: string): ResponseClass {
     return 'crisis_redirection';
   }
 
-  if (CIRCLE_PATTERNS.some((p) => p.test(value))) {
-    return 'circle_suggestion';
-  }
-
-  if (HUMAN_CONNECTION_PATTERNS.some((p) => p.test(value))) {
-    return 'human_connection_prompt';
-  }
-
   if (REFUSAL_PATTERNS.some((p) => p.test(value))) {
     return 'refusal_with_dignity';
   }
@@ -69,8 +59,16 @@ export function classifyResponse(text: string): ResponseClass {
     return 'grounding_prompt';
   }
 
+  if (HUMAN_CONNECTION_PATTERNS.some((p) => p.test(value))) {
+    return 'human_connection_prompt';
+  }
+
   if (SUPPORTIVE_PATTERNS.some((p) => p.test(value))) {
     return 'supportive_reflection';
+  }
+
+  if (CIRCLE_PATTERNS.some((p) => p.test(value))) {
+    return 'circle_suggestion';
   }
 
   return 'normal_reflection';
