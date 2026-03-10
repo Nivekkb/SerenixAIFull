@@ -30,6 +30,10 @@
   "qualityGates": {
     "enabled": true,
     "minPassRate": 95,
+    "minS2Recall": 100,
+    "minS3Recall": 100,
+    "maxElevatedRiskFalseNegatives": 0,
+    "maxElevatedRiskFalseNegativeRate": 0,
     "maxFailureRateByCategory": {
       "neutral": 0,
       "benign emotional vulnerability": 0,

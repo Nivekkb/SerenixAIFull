@@ -7,7 +7,7 @@ import { loadDatasets } from './dataset';
 import { RunLogger } from './logger';
 import { SeededRng } from './rng';
 import { SessionStore } from './sessions';
-import { blockedResponseToString, expectedResponseToString, expectedStateToString, isBlockedResponse, isResponseClassMatch, isStateInRange, sleep, toIsoTimestamp, truncateForLog } from './state';
+import { blockedResponseToString, detectDependencyLanguage, expectedResponseToString, expectedStateToString, isBlockedResponse, isResponseClassMatch, isStateInRange, sleep, toIsoTimestamp, truncateForLog } from './state';
 import { buildSummary, evaluateQualityGates, summaryToMarkdown } from './summary';
 import { applyPromptVariation } from './variation';
 import { SelfDirectAdapter } from './adapters/selfDirectAdapter';
@@ -60,6 +60,8 @@ function buildFailureReason(args: {
   stateAfterPass: boolean;
   responsePass: boolean;
   blockedResponsePass: boolean;
+  dependencyLanguagePass: boolean;
+  dependencyLanguageMatches: string[];
   expectedStateBefore: string;
   expectedStateAfter: string;
   expectedResponse: string;
@@ -80,6 +82,9 @@ function buildFailureReason(args: {
   }
   if (!args.blockedResponsePass) {
     reasons.push(`blocked_response_violation blocked=${args.blockedResponse} actual=${args.actualResponse}`);
+  }
+  if (!args.dependencyLanguagePass) {
+    reasons.push(`dependency_language_violation matches=${args.dependencyLanguageMatches.join('|') || 'unknown'}`);
   }
   return reasons.join('; ');
 }
@@ -179,8 +184,10 @@ async function run(): Promise<void> {
             const stateAfterPass = isStateInRange(result.actualStateAfter, turnDef.expectedState);
             const responsePass = isResponseClassMatch(result.actualResponseClass, turnDef.expectedResponseClass);
             const blockedResponsePass = !isBlockedResponse(result.actualResponseClass, turnDef.blockedResponseClass);
+            const dependencyLanguage = detectDependencyLanguage(result.actualResponseText);
+            const dependencyLanguagePass = !dependencyLanguage.detected;
 
-            const pass = stateBeforePass && stateAfterPass && responsePass && blockedResponsePass;
+            const pass = stateBeforePass && stateAfterPass && responsePass && blockedResponsePass && dependencyLanguagePass;
             const failureReason = pass
               ? ''
               : buildFailureReason({
@@ -188,6 +195,8 @@ async function run(): Promise<void> {
                   stateAfterPass,
                   responsePass,
                   blockedResponsePass,
+                  dependencyLanguagePass,
+                  dependencyLanguageMatches: dependencyLanguage.matches,
                   expectedStateBefore: expectedStateToString(turnDef.expectedStateBefore),
                   expectedStateAfter: expectedStateToString(turnDef.expectedState),
                   expectedResponse: expectedResponseToString(turnDef.expectedResponseClass),
@@ -217,7 +226,9 @@ async function run(): Promise<void> {
               pass,
               failure_reason: failureReason,
               latency_ms: result.latencyMs,
-              triggered_rules: result.triggeredRules,
+              triggered_rules: dependencyLanguage.detected
+                ? [...result.triggeredRules, `dependency_language:${dependencyLanguage.matches.join('|')}`]
+                : result.triggeredRules,
               score_before: result.scoreBefore ?? null,
               score_after: result.scoreAfter ?? null,
             };

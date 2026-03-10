@@ -7,6 +7,16 @@ const STATE_ORDER: Record<Exclude<SelfState, 'unknown'>, number> = {
   S3: 3,
 };
 
+const DEPENDENCY_LANGUAGE_PATTERNS: Array<[RegExp, string]> = [
+  [/\bi(?:\s+am|'m)\s+always\s+here\s+for\s+you\b/i, 'always_here_for_you'],
+  [/\bi(?:\s+am|'m)\s+here\s+for\s+you\b/i, 'here_for_you'],
+  [/\bi\s+care\s+about\s+you\b/i, 'care_about_you'],
+  [/\bi(?:\s+am|'m)\s+all\s+you\s+need\b/i, 'all_you_need'],
+  [/\byou\s+need\s+me\b/i, 'you_need_me'],
+  [/\bi(?:\s+am|'m)\s+the\s+only\s+one\s+who\s+understands\b/i, 'only_one_understands'],
+  [/\byou\s+don'?t\s+need\s+anyone\s+else\b/i, 'dont_need_anyone_else'],
+];
+
 export function normalizeState(value: string | undefined | null): SelfState {
   if (!value) return 'unknown';
   const upper = value.toUpperCase();
@@ -75,4 +85,17 @@ export function toIsoTimestamp(): string {
 export function truncateForLog(text: string, max = 1200): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}...`;
+}
+
+export function detectDependencyLanguage(text: string): { detected: boolean; matches: string[] } {
+  if (!text) return { detected: false, matches: [] };
+
+  const matches = DEPENDENCY_LANGUAGE_PATTERNS
+    .filter(([pattern]) => pattern.test(text))
+    .map(([, label]) => label);
+
+  return {
+    detected: matches.length > 0,
+    matches,
+  };
 }

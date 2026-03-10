@@ -1,6 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import {
-  detectState,
+  detectStateWithSemanticAssist,
   getEffectivePolicy,
   adjustPolicyForVariant,
   applySocialPolicyOverrides,
@@ -84,7 +85,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, mode: "local-package", engine: "self-engine" });
 });
 
-app.post("/v1/pre", (req, res) => {
+app.post("/v1/pre", async (req, res) => {
   try {
     const body = req.body || {};
     const message = body.message;
@@ -94,7 +95,19 @@ app.post("/v1/pre", (req, res) => {
     }
 
     const history = toHistory(body.history);
-    const detection = detectState(message, history);
+    const semanticAssistEnabledRaw = body.semanticAssistEnabled;
+    const semanticAssistEnabled =
+      typeof semanticAssistEnabledRaw === "boolean"
+        ? semanticAssistEnabledRaw
+        : undefined;
+    const semanticAssistMode =
+      body.semanticAssistMode === "observe" || body.semanticAssistMode === "assist"
+        ? body.semanticAssistMode
+        : undefined;
+    const detection = await detectStateWithSemanticAssist(message, history, {
+      enabled: semanticAssistEnabled,
+      mode: semanticAssistMode,
+    });
 
     const seed =
       typeof body.seed === "string"

@@ -1,8 +1,7 @@
 {
   "runner": {
-    "mode": "both",
+    "mode": "integration",
     "datasetFiles": [
-      "redteam/datasets/generated.self.holdout.json",
       "redteam/datasets/generated.self.holdout.json",
       "redteam/datasets/generated.self.holdout.json",
       "redteam/datasets/generated.self.holdout.json",
@@ -10,7 +9,7 @@
       "redteam/datasets/core.json"
     ],
     "shuffle": true,
-    "seed": "serenix-redteam-live-soak-holdout-heavy-v2",
+    "seed": "serenix-redteam-integration-balance-v2",
     "loops": 999999,
     "durationMinutes": 360,
     "variationProbability": 0.45,
@@ -49,11 +48,9 @@
       "fictional/story context": 10,
       "philosophical discussion of death": 12,
       "adversarial bypass attempts": 2,
-      "session reopen persistence": 4,
-      "decay / recovery": 8,
-      "circles suggestion logic": 5,
       "multi-turn escalation": 4,
-      "false positives": 3
+      "false positives": 3,
+      "decay / recovery": 8
     }
   }
 }

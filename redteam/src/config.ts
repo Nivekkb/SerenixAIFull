@@ -90,6 +90,10 @@ export function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): AppConfig 
       enabled: asBoolean(parsed.qualityGates?.enabled, false),
       minPassRate: Math.max(0, Math.min(100, asNumber(parsed.qualityGates?.minPassRate, 0))),
       maxFailureRateByCategory: toFailureRateMap(parsed.qualityGates?.maxFailureRateByCategory),
+      minS2Recall: Math.max(0, Math.min(100, asNumber(parsed.qualityGates?.minS2Recall, 0))),
+      minS3Recall: Math.max(0, Math.min(100, asNumber(parsed.qualityGates?.minS3Recall, 0))),
+      maxElevatedRiskFalseNegatives: Math.max(0, Math.floor(asNumber(parsed.qualityGates?.maxElevatedRiskFalseNegatives, Number.MAX_SAFE_INTEGER))),
+      maxElevatedRiskFalseNegativeRate: Math.max(0, Math.min(100, asNumber(parsed.qualityGates?.maxElevatedRiskFalseNegativeRate, 100))),
     },
   };
 }

@@ -95,6 +95,33 @@ function normalizePrompt(prompt: string): string {
   return prompt.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function enforceNonDependencyLanguage(text: string): string {
+  if (!text) return text;
+
+  let out = text;
+  const replacements: Array<[RegExp, string]> = [
+    [/\bi(?:\s+am|'m)\s+always\s+here\s+for\s+you\b/gi, 'You deserve support from trusted people around you.'],
+    [/\bi(?:\s+am|'m)\s+here\s+for\s+you\b/gi, 'You deserve support from trusted people around you.'],
+    [/\bi(?:\s+am|'m)\s+here\s+with\s+you\b/gi, 'You deserve steady support while you process this.'],
+    [/\bi(?:\s+am|'m)\s+here\s+if\s+you\s+need\s+me\b/gi, 'You can keep leaning on trusted people when support is needed.'],
+    [/\bi\s+care\s+about\s+you\b/gi, 'Your wellbeing matters.'],
+    [/\bi\s+care\s+about\s+your\s+safety\b/gi, 'Your safety matters.'],
+    [/\byou\s+need\s+me\b/gi, 'Support from trusted people can help.'],
+    [/\bi(?:\s+am|'m)\s+all\s+you\s+need\b/gi, 'You deserve support from real people around you.'],
+    [/\bi(?:\s+am|'m)\s+the\s+only\s+one\s+who\s+understands\b/gi, 'More than one person can support you through this.'],
+    [/\byou\s+don'?t\s+need\s+anyone\s+else\b/gi, 'Reaching out to someone you trust can help.'],
+  ];
+
+  for (const [pattern, replacement] of replacements) {
+    out = out.replace(pattern, replacement);
+  }
+
+  return out
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([.,!?;:])/g, '$1')
+    .trim();
+}
+
 function classifyDeterministicFallback(prompt: string): {
   state: SelfState;
   responseClass: FallbackResponseClass;
@@ -309,7 +336,7 @@ function buildDeterministicFallbackResponse(args: {
         state: analysis.state,
         responseClass: analysis.responseClass,
         triggeredRules: analysis.triggeredRules,
-        text: `${person}I can't help with instructions to hurt yourself or end a life. If this is about how you're feeling, I care about your safety. If you might act on this now, call or text 988 (US/Canada) or contact local emergency services right now. If you want, we can take one safe next step together in this chat.`,
+        text: `${person}I can't help with instructions to hurt yourself or end a life. If this is about how you're feeling, your safety matters. If you might act on this now, call or text 988 (US/Canada) or contact local emergency services right now. If you want, we can take one safe next step right now.`,
       };
     }
 
@@ -327,7 +354,7 @@ function buildDeterministicFallbackResponse(args: {
         state: analysis.state,
         responseClass: 'grounding_prompt',
         triggeredRules: analysis.triggeredRules,
-        text: `${person}I am with you. Let's do a quick reset: inhale for 4, hold for 4, exhale for 6. Repeat that 4 times, then name 3 things you can see and 2 things you can feel.`,
+        text: `${person}Let's do a quick reset: inhale for 4, hold for 4, exhale for 6. Repeat that 4 times, then name 3 things you can see and 2 things you can feel.`,
       };
     }
 
@@ -362,7 +389,7 @@ function buildDeterministicFallbackResponse(args: {
       state: analysis.state,
       responseClass: analysis.responseClass,
       triggeredRules: analysis.triggeredRules,
-      text: `${person}that sounds like a lot to hold right now. I am here with you. What part of this feels heaviest in this moment?`,
+      text: `${person}that sounds like a lot to hold right now. You deserve support while you process this. What part of this feels heaviest in this moment?`,
     };
   }
 
@@ -370,7 +397,7 @@ function buildDeterministicFallbackResponse(args: {
     state: analysis.state,
     responseClass: analysis.responseClass,
     triggeredRules: analysis.triggeredRules,
-    text: `${person}I am here with you. Tell me what you want to unpack first, and we can take it one clear step at a time.`,
+    text: `${person}Tell me what you want to unpack first, and we can take it one clear step at a time.`,
   };
 }
 
@@ -430,7 +457,7 @@ function fallbackCircleMediation(
   presenceMode: 'quiet' | 'facilitation' | 'reflection'
 ): string {
   if (presenceMode === 'quiet' && !analysis.hasConflict) {
-    return "I'm here in the background if you need support.";
+    return "AI will stay in the background unless support is needed.";
   }
 
   if (analysis.level >= 3) {
@@ -587,6 +614,9 @@ export async function getAIResponse(
   If the user is venting, prioritize reflection and curiosity first (for example: validating, summarizing, asking what they need right now).
   Avoid giving medical advice, but offer a safe space to vent. 
   Keep responses concise but warm.
+  Never use dependency-forming language or imply an exclusive bond with the AI.
+  Do not use phrasing like "I'm always here for you", "you need me", "I'm all you need", or "I'm the only one who understands."
+  Prefer language that encourages real human connection and trusted support networks.
   
   If the user has been reflecting on a heavy situation or something that seems to be weighing on them, at a natural point in the conversation, you can gently suggest using Circles. 
   Use phrasing similar to: "It sounds like this situation has been weighing on you. Sometimes sharing things like this with someone you trust can make it easier to process. If you ever want a structured way to talk about it with friends or family, Serenix circles can help guide those conversations."
@@ -614,7 +644,9 @@ export async function getAIResponse(
         reason: 'none',
         fallbackResult: deterministicFallback,
       });
-      return clarifierQuestion || "I want to make sure I understand safely. Are you feeling like you might hurt yourself or someone else right now?";
+      return enforceNonDependencyLanguage(
+        clarifierQuestion || "I want to make sure I understand safely. Are you feeling like you might hurt yourself or someone else right now?",
+      );
     }
     if (pre?.policyPrompt?.trim()) {
       effectiveSystemInstruction = pre.policyPrompt;
@@ -638,12 +670,13 @@ export async function getAIResponse(
       reason: 'missing_api_key',
       fallbackResult: deterministicFallback,
     });
-    return maybeApplySelfPostflight({
+    const postflight = await maybeApplySelfPostflight({
       userMessage: prompt,
       output: deterministicFallback.text,
       policy: selfPolicy,
       userId,
     });
+    return enforceNonDependencyLanguage(postflight);
   }
 
   try {
@@ -662,12 +695,13 @@ export async function getAIResponse(
       reason: usedFallback ? 'empty_model_output' : 'none',
       fallbackResult: deterministicFallback,
     });
-    return maybeApplySelfPostflight({
+    const postflight = await maybeApplySelfPostflight({
       userMessage: prompt,
       output,
       policy: selfPolicy,
       userId,
     });
+    return enforceNonDependencyLanguage(postflight);
   } catch (error) {
     if (isLikelyOutageError(error)) {
       console.warn('Gemini unavailable due to quota/outage; using deterministic fallback.', error);
@@ -679,12 +713,13 @@ export async function getAIResponse(
       reason: 'provider_error',
       fallbackResult: deterministicFallback,
     });
-    return maybeApplySelfPostflight({
+    const postflight = await maybeApplySelfPostflight({
       userMessage: prompt,
       output: deterministicFallback.text,
       policy: selfPolicy,
       userId,
     });
+    return enforceNonDependencyLanguage(postflight);
   }
 }
 
@@ -767,7 +802,7 @@ export async function getCircleMediation(
   presenceMode: 'quiet' | 'facilitation' | 'reflection' = 'facilitation'
 ) {
   if (!ai) {
-    return fallbackCircleMediation(analysis, presenceMode);
+    return enforceNonDependencyLanguage(fallbackCircleMediation(analysis, presenceMode));
   }
   const levelInstructions = {
     1: "Acknowledge the rising tension gently. Encourage everyone to slow down and breathe. Suggest restating feelings rather than blame.",
@@ -791,7 +826,7 @@ export async function getCircleMediation(
   - If mode is 'quiet' and there's no conflict, YOU SHOULD NOT BE RESPONDING.
   - If mode is 'facilitation', offer warm nudges or supportive reflections if engagement is low.
   - If mode is 'reflection', be more active in guiding the discussion, asking deep questions, and summarizing themes.
-  - If engagement is high and there's no conflict, keep your response extremely brief or just offer a warm "I'm here if you need me" type of presence.
+  - If engagement is high and there's no conflict, keep your response extremely brief and neutral, without dependency framing.
   - ${levelInstructions[analysis.level as keyof typeof levelInstructions] || ""}
 
   Conversation:
@@ -806,16 +841,16 @@ export async function getCircleMediation(
         systemInstruction: "You are SerenixAI, a compassionate group mediator. Your goal is to keep the conversation constructive and safe without being policing.",
       }
     });
-    return response.text || fallbackCircleMediation(analysis, presenceMode);
+    return enforceNonDependencyLanguage(response.text || fallbackCircleMediation(analysis, presenceMode));
   } catch (error) {
     console.warn('Circle mediation fallback activated.', error);
-    return fallbackCircleMediation(analysis, presenceMode);
+    return enforceNonDependencyLanguage(fallbackCircleMediation(analysis, presenceMode));
   }
 }
 
 export async function getCircleActivity(type: 'starter' | 'gratitude' | 'story' | 'checkin', messages: { senderName: string, content: string }[]) {
   if (!ai) {
-    return fallbackCircleActivity(type);
+    return enforceNonDependencyLanguage(fallbackCircleActivity(type));
   }
   const context = messages.length > 0 
     ? `Based on the recent mood of the group: ${messages.map(m => m.content).join(' ')}`
@@ -836,9 +871,9 @@ export async function getCircleActivity(type: 'starter' | 'gratitude' | 'story' 
         systemInstruction: "You are SerenixAI, a group facilitator. Keep it brief, warm, and inviting.",
       }
     });
-    return response.text || fallbackCircleActivity(type);
+    return enforceNonDependencyLanguage(response.text || fallbackCircleActivity(type));
   } catch (error) {
     console.warn('Circle activity fallback activated.', error);
-    return fallbackCircleActivity(type);
+    return enforceNonDependencyLanguage(fallbackCircleActivity(type));
   }
 }

@@ -77,6 +77,10 @@ export interface QualityGatesConfig {
   enabled: boolean;
   minPassRate: number;
   maxFailureRateByCategory: Record<string, number>;
+  minS2Recall?: number;
+  minS3Recall?: number;
+  maxElevatedRiskFalseNegatives?: number;
+  maxElevatedRiskFalseNegativeRate?: number;
 }
 
 export interface AppConfig {
@@ -149,6 +153,25 @@ export interface RunSummary {
     failed: number;
     failureRate: number;
   }>;
+  safetyMetrics: {
+    s2Recall: {
+      eligible: number;
+      hits: number;
+      misses: number;
+      recall: number;
+    };
+    s3Recall: {
+      eligible: number;
+      hits: number;
+      misses: number;
+      recall: number;
+    };
+    elevatedRiskFalseNegatives: {
+      totalElevated: number;
+      falseNegatives: number;
+      falseNegativeRate: number;
+    };
+  };
   topFailureReasons: Array<{
     reason: string;
     count: number;

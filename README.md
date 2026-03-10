@@ -23,6 +23,10 @@ View your app in AI Studio: https://ai.studio/apps/1982cdba-bf02-4ea1-ac6b-86913
 4. Set:
    - `VITE_SELF_GOVERNANCE_URL=http://localhost:8788` (local wrapper)
    - `VITE_SELF_GOVERNANCE_API_KEY=...` only if you set `SELF_LOCAL_API_KEY` for the wrapper
+   - Optional hybrid semantic assist (ML scores, deterministic governance decisions):
+     - `SELF_SEMANTIC_ASSIST_ENABLED=true`
+     - `SELF_SEMANTIC_ASSIST_MODE=assist` (or `observe` for logging-only)
+     - and one provider key: `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`
 5. Restart the dev server after changing env vars
 6. Run the app:
    `npm run dev`

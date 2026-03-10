@@ -123,7 +123,7 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
     } catch (error) {
       console.error('Gemini response error:', error);
       setShowFallbackHint(true);
-      aiText = "I am still here with you. Something went wrong on the connection side, but you can keep talking and I will stay with you.";
+      aiText = "There was a connection issue on the AI side. You can keep sharing here, and if it helps, consider reaching out to someone you trust while we reconnect.";
     }
 
     try {
@@ -163,7 +163,7 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
         {messages.length === 0 && !isTyping && (
           <div className="h-full flex flex-col items-center justify-center text-center opacity-40 py-20">
             <Sparkles size={48} className="mb-4" />
-            <p className="text-lg font-serif italic">"Take a deep breath. I'm here to listen."</p>
+            <p className="text-lg font-serif italic">"Take a deep breath. This space is here to listen."</p>
           </div>
         )}
         
