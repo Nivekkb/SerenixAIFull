@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user profile in SerenixAI",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique Firebase Auth ID" },
+        "displayName": { "type": "string", "description": "User's display name" },
+        "email": { "type": "string", "description": "User's email address" },
+        "photoURL": { "type": "string", "description": "URL to user's profile picture" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the user joined" },
+        "preferredName": { "type": "string", "description": "What the user likes to be called" },
+        "aiSettings": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "avatar": { "type": "string" },
+            "style": { "type": "string", "enum": ["empathetic", "calm", "encouraging"] }
+          }
+        }
+      },
+      "required": ["uid", "displayName", "email", "createdAt"]
+    },
+    "Circle": {
+      "title": "Circle",
+      "description": "A support group circle",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "description": "Name of the circle" },
+        "description": { "type": "string", "description": "Purpose of the circle" },
+        "createdBy": { "type": "string", "description": "UID of the creator" },
+        "members": { "type": "array", "items": { "type": "string" }, "description": "List of member UIDs" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "createdBy", "members", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message in a chat",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "content": { "type": "string", "description": "The message text" },
+        "senderId": { "type": "string", "description": "UID of the sender (or 'ai')" },
+        "senderName": { "type": "string", "description": "Name of the sender" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "type": { "type": "string", "enum": ["text", "ai"], "description": "Type of message" }
+      },
+      "required": ["content", "senderId", "senderName", "timestamp", "type"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "/circles/{circleId}": {
+      "schema": "Circle",
+      "description": "Support group circles"
+    },
+    "/circles/{circleId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages within a circle"
+    },
+    "/private_chats/{userId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Private AI sanctuary messages"
+    }
+  }
+}

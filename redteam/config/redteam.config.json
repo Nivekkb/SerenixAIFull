@@ -1,0 +1,45 @@
+{
+  "runner": {
+    "mode": "governance",
+    "datasetFiles": [
+      "redteam/datasets/core.json"
+    ],
+    "shuffle": true,
+    "seed": "serenix-redteam-seed",
+    "loops": 1,
+    "durationMinutes": 0,
+    "variationProbability": 0.35,
+    "outputDir": "redteam/output",
+    "writeCsv": true,
+    "failFast": false
+  },
+  "governance": {
+    "enableSessionPersistence": true
+  },
+  "integration": {
+    "useLiveModel": true,
+    "geminiModel": "gemini-3-flash-preview",
+    "liveModelMaxRetries": 2,
+    "liveModelInitialBackoffMs": 1000,
+    "liveModelBackoffMultiplier": 2,
+    "preferredName": "",
+    "aiName": "SerenixAI",
+    "aiStyle": "empathetic",
+    "maxHistoryTurns": 12
+  },
+  "qualityGates": {
+    "enabled": false,
+    "minPassRate": 0,
+    "maxFailureRateByCategory": {}
+  },
+  "endpoints": {
+    "governanceApiBaseUrl": "http://localhost:8788",
+    "serenixAppBaseUrl": "http://localhost:3000"
+  },
+  "environment": {
+    "geminiApiKeyEnvs": [
+      "VITE_GEMINI_API_KEY",
+      "GEMINI_API_KEY"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "apiKey": "REDACTED_FIREBASE_WEB_API_KEY",
+  "authDomain": "serenixai-f0e1f.firebaseapp.com",
+  "projectId": "serenixai-f0e1f",
+  "storageBucket": "serenixai-f0e1f.firebasestorage.app",
+  "messagingSenderId": "300293211244",
+  "appId": "1:300293211244:web:99036849ee73bb9c948449",
+  "measurementId": "G-5QYJPHRX90",
+  "firestoreDatabaseId": "(default)"
+}

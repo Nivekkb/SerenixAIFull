@@ -1,0 +1,5 @@
+{
+  "name": "SerenixAI",
+  "description": "An emotional sanctuary for stress relief and AI-mediated group support circles.",
+  "requestFramePermissions": ["microphone"]
+}

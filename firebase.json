@@ -1,0 +1,28 @@
+{
+  "firestore": {
+    "database": "(default)",
+    "location": "northamerica-northeast2",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "source": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "frameworksBackend": {
+      "region": "us-west1"
+    }
+  },
+  "auth": {
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "SerenixAI",
+        "supportEmail": "Kevin@serenixdigital.com"
+      }
+    }
+  }
+}
