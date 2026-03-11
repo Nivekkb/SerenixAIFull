@@ -6,5 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+.firebase/
 redteam/output/*
 !redteam/output/.gitkeep
