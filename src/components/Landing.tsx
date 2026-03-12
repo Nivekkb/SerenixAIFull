@@ -21,7 +21,10 @@ export default function Landing({ onLogin }: LandingProps) {
           Welcome to <span className="italic">SerenixAI</span>
         </h1>
         <p className="text-xl md:text-2xl text-serenix-ink/70 max-w-2xl mx-auto font-light leading-relaxed">
-          Your emotional sanctuary. A safe space to breathe, vent, and find peace with AI-guided support.
+          A private space for thoughtful check-ins and reflection when life feels heavy.
+        </p>
+        <p className="mt-4 text-sm md:text-base text-serenix-ink/55 max-w-2xl mx-auto">
+          SerenixAI supports reflection and next steps. It is not therapy or emergency care, and it cannot replace professional or personal support.
         </p>
       </motion.div>
 
@@ -35,10 +38,10 @@ export default function Landing({ onLogin }: LandingProps) {
           onClick={onLogin}
           className="bg-serenix-ink text-white px-8 py-4 rounded-full text-lg font-medium shadow-xl hover:bg-serenix-ink/90 transition-all active:scale-95"
         >
-          Begin Your Journey
+          Start Check-In
         </button>
         <p className="text-serenix-ink/40 text-sm">
-          Join our community of {Math.floor(Math.random() * 1000) + 500}+ finding peace today.
+          Find clear prompts and gentle nudges toward real-world support in one place.
         </p>
       </motion.div>
 
@@ -52,27 +55,27 @@ export default function Landing({ onLogin }: LandingProps) {
           <div className="w-12 h-12 rounded-2xl bg-white/50 flex items-center justify-center text-serenix-accent">
             <Heart size={24} />
           </div>
-          <h3 className="font-serif text-xl font-medium">Private Sanctuary</h3>
+          <h3 className="font-serif text-xl font-medium">Private Check-In Space</h3>
           <p className="text-serenix-ink/60 font-light">
-            A personal space to chat with our empathetic AI whenever you feel overwhelmed.
+            Take a breath, name what you are feeling, and choose one next step.
           </p>
         </div>
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 rounded-2xl bg-white/50 flex items-center justify-center text-serenix-accent">
             <Users size={24} />
           </div>
-          <h3 className="font-serif text-xl font-medium">Support Circles</h3>
+          <h3 className="font-serif text-xl font-medium">Invite-Only Circles</h3>
           <p className="text-serenix-ink/60 font-light">
-            Join AI-mediated group chats with friends to support each other in a safe environment.
+            Create private group spaces with people you trust using invite links or codes.
           </p>
         </div>
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 rounded-2xl bg-white/50 flex items-center justify-center text-serenix-accent">
             <Shield size={24} />
           </div>
-          <h3 className="font-serif text-xl font-medium">Safe & Secure</h3>
+          <h3 className="font-serif text-xl font-medium">Scope & Safety</h3>
           <p className="text-serenix-ink/60 font-light">
-            Your privacy is our priority. Your sanctuary is yours alone.
+            Designed for reflective support. If you may be at risk, use immediate human help resources.
           </p>
         </div>
       </motion.div>

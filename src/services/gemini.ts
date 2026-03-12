@@ -1,10 +1,20 @@
 import { GoogleGenAI } from "@google/genai";
-import { AISettings } from "../types";
+import type { ResponseLength } from "../types";
 
 const geminiApiKey =
   (import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();
 
-const selfGovernanceBaseUrl = (import.meta.env.VITE_SELF_GOVERNANCE_URL || '').trim().replace(/\/+$/, '');
+function normalizeGovernanceBaseUrl(value: unknown): string {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+const selfGovernanceBaseUrl = normalizeGovernanceBaseUrl(import.meta.env.VITE_SELF_GOVERNANCE_URL);
+const selfGovernancePreBaseUrl = normalizeGovernanceBaseUrl(
+  import.meta.env.VITE_SELF_GOVERNANCE_PRE_URL || selfGovernanceBaseUrl,
+);
+const selfGovernancePostBaseUrl = normalizeGovernanceBaseUrl(
+  import.meta.env.VITE_SELF_GOVERNANCE_POST_URL || selfGovernanceBaseUrl,
+);
 const selfGovernanceApiKey = (import.meta.env.VITE_SELF_GOVERNANCE_API_KEY || '').trim();
 const selfGovernanceTimeoutMs = Number.parseInt(String(import.meta.env.VITE_SELF_GOVERNANCE_TIMEOUT_MS || '1200'), 10);
 const hasGeminiApiKey = Boolean(geminiApiKey);
@@ -40,7 +50,7 @@ type FallbackResponseClass =
   | 'circle_suggestion'
   | 'refusal_with_dignity'
   | 'crisis_redirection';
-type AIFallbackReason = 'none' | 'missing_api_key' | 'provider_error' | 'empty_model_output';
+type AIFallbackReason = 'none' | 'missing_api_key' | 'provider_error' | 'empty_model_output' | 'deterministic_guard';
 
 interface DeterministicFallbackResult {
   text: string;
@@ -95,6 +105,16 @@ function normalizePrompt(prompt: string): string {
   return prompt.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function responseLengthInstruction(responseLength: ResponseLength): string {
+  if (responseLength === 'short') {
+    return 'Keep responses brief by default: 1-3 short sentences, usually under 60 words, unless safety requires more detail.';
+  }
+  if (responseLength === 'medium') {
+    return 'Keep responses moderate: 2-4 sentences, usually under 120 words, unless safety requires more detail.';
+  }
+  return 'Long mode is enabled. You may provide fuller detail when useful, while still avoiding unnecessary verbosity.';
+}
+
 function enforceNonDependencyLanguage(text: string): string {
   if (!text) return text;
 
@@ -103,9 +123,15 @@ function enforceNonDependencyLanguage(text: string): string {
     [/\bi(?:\s+am|'m)\s+always\s+here\s+for\s+you\b/gi, 'You deserve support from trusted people around you.'],
     [/\bi(?:\s+am|'m)\s+here\s+for\s+you\b/gi, 'You deserve support from trusted people around you.'],
     [/\bi(?:\s+am|'m)\s+here\s+with\s+you\b/gi, 'You deserve steady support while you process this.'],
+    [/\bi(?:\s+am|'m)\s+right\s+here\s+with\s+you\b/gi, 'You deserve steady support while you process this.'],
+    [/\bi(?:\s+am|'m)\s+here\s+to\s+hold\s+(?:this\s+)?space\b/gi, 'You deserve support that keeps you connected to trusted people.'],
+    [/\bi(?:\s+am|'m)\s+not\s+going\s+anywhere\b/gi, 'You deserve consistent support from trusted people around you.'],
+    [/\bi(?:\s+won'?t|will\s+not)\s+leave\s+you\b/gi, 'You deserve consistent support from trusted people around you.'],
     [/\bi(?:\s+am|'m)\s+here\s+if\s+you\s+need\s+me\b/gi, 'You can keep leaning on trusted people when support is needed.'],
     [/\bi\s+care\s+about\s+you\b/gi, 'Your wellbeing matters.'],
     [/\bi\s+care\s+about\s+your\s+safety\b/gi, 'Your safety matters.'],
+    [/\byou\s+are\s+not\s+alone\s+because\s+you\s+have\s+me\b/gi, 'You are not alone; trusted people can support you too.'],
+    [/\bwe\s+can\s+sit\s+with\s+this\s+together\b/gi, 'You can move through this with support from people you trust.'],
     [/\byou\s+need\s+me\b/gi, 'Support from trusted people can help.'],
     [/\bi(?:\s+am|'m)\s+all\s+you\s+need\b/gi, 'You deserve support from real people around you.'],
     [/\bi(?:\s+am|'m)\s+the\s+only\s+one\s+who\s+understands\b/gi, 'More than one person can support you through this.'],
@@ -127,6 +153,7 @@ function classifyDeterministicFallback(prompt: string): {
   responseClass: FallbackResponseClass;
   triggeredRules: string[];
   isMethodSeeking: boolean;
+  isDarkHumorDisappearance: boolean;
   isPanic: boolean;
   isIsolation: boolean;
   isThirdPersonConcern: boolean;
@@ -173,6 +200,16 @@ function classifyDeterministicFallback(prompt: string): {
     /\bi'm at my limit\b/,
   ];
 
+  const darkHumorDisappearancePatterns = [
+    /\balt\s*\+\s*f4\b.*\b(?:existence|myself|me|life)\b/,
+    /\bquit[-\s]?button\b.*\b(?:existence|life|me)\b/,
+    /\blog off\b.*\b(?:permanently|for good|forever)\b/,
+    /\bdelete myself\b/,
+    /\bvanish(?:ing)?\s+for\s+good\b/,
+    /\buninstall life\b/,
+    /\blife\.?exe\b.*\b(?:stopped|crashed|quit)\b/,
+  ];
+
   const panicPatterns = [
     /\bi(?:'m| am) having a panic attack\b/,
     /\bi can't breathe\b/,
@@ -198,6 +235,7 @@ function classifyDeterministicFallback(prompt: string): {
   const isExplicitIntent = explicitIntentPatterns.some((pattern) => pattern.test(normalized));
   const isPassiveDeathWish = passiveDeathWishPatterns.some((pattern) => pattern.test(normalized));
   const isHopeless = hopelessPatterns.some((pattern) => pattern.test(normalized));
+  const isDarkHumorDisappearance = darkHumorDisappearancePatterns.some((pattern) => pattern.test(normalized));
   const isPanic = panicPatterns.some((pattern) => pattern.test(normalized));
   const isIsolation = isolationPatterns.some((pattern) => pattern.test(normalized));
   const isThirdPersonConcern = thirdPersonConcernPatterns.some((pattern) => pattern.test(normalized));
@@ -214,6 +252,7 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: 'refusal_with_dignity',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -227,6 +266,7 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: 'crisis_redirection',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -240,6 +280,7 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: 'human_connection_prompt',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -253,6 +294,7 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: isIsolation ? 'circle_suggestion' : 'supportive_reflection',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -266,6 +308,21 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: 'grounding_prompt',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
+      isPanic,
+      isIsolation,
+      isThirdPersonConcern,
+    };
+  }
+
+  if (isDarkHumorDisappearance) {
+    triggeredRules.push('dark_humor_disappearance');
+    return {
+      state: 'S1',
+      responseClass: 'supportive_reflection',
+      triggeredRules,
+      isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -279,6 +336,7 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: 'supportive_reflection',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -292,6 +350,7 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: 'normal_reflection',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -305,6 +364,7 @@ function classifyDeterministicFallback(prompt: string): {
       responseClass: 'normal_reflection',
       triggeredRules,
       isMethodSeeking,
+      isDarkHumorDisappearance,
       isPanic,
       isIsolation,
       isThirdPersonConcern,
@@ -316,6 +376,7 @@ function classifyDeterministicFallback(prompt: string): {
     responseClass: 'normal_reflection',
     triggeredRules: ['default_reflection'],
     isMethodSeeking,
+    isDarkHumorDisappearance,
     isPanic,
     isIsolation,
     isThirdPersonConcern,
@@ -336,7 +397,7 @@ function buildDeterministicFallbackResponse(args: {
         state: analysis.state,
         responseClass: analysis.responseClass,
         triggeredRules: analysis.triggeredRules,
-        text: `${person}I can't help with instructions to hurt yourself or end a life. If this is about how you're feeling, your safety matters. If you might act on this now, call or text 988 (US/Canada) or contact local emergency services right now. If you want, we can take one safe next step right now.`,
+        text: `${person}I can’t help with instructions for harming yourself or ending a life. If this connects to how you’re feeling right now, your safety comes first. If you might act on this, call or text 988 (US/Canada) or contact local emergency services now. If it helps, we can focus on one safe next step right away.`,
       };
     }
 
@@ -344,7 +405,7 @@ function buildDeterministicFallbackResponse(args: {
       state: analysis.state,
       responseClass: analysis.responseClass,
       triggeredRules: analysis.triggeredRules,
-      text: `${person}Thank you for saying this out loud. You do not have to carry this alone right now. If you might be in immediate danger, call or text 988 (US/Canada) or contact local emergency services now. If you can, reach out to one trusted person and tell them you need support tonight.`,
+      text: `${person}Thank you for saying this out loud. You don’t have to carry this by yourself right now. If there’s any immediate danger, call or text 988 (US/Canada) or contact local emergency services now. If you can, reach out to one trusted person and let them know you need support tonight.`,
     };
   }
 
@@ -354,7 +415,7 @@ function buildDeterministicFallbackResponse(args: {
         state: analysis.state,
         responseClass: 'grounding_prompt',
         triggeredRules: analysis.triggeredRules,
-        text: `${person}Let's do a quick reset: inhale for 4, hold for 4, exhale for 6. Repeat that 4 times, then name 3 things you can see and 2 things you can feel.`,
+        text: `${person}Let’s do a quick reset together: breathe in for 4, hold for 4, out for 6. Repeat that 4 times, then name 3 things you can see and 2 things you can feel.`,
       };
     }
 
@@ -363,7 +424,7 @@ function buildDeterministicFallbackResponse(args: {
         state: analysis.state,
         responseClass: 'human_connection_prompt',
         triggeredRules: analysis.triggeredRules,
-        text: `${person}that is serious, and it is good you spoke up. Check on them directly and ask if they are in immediate danger. If risk is immediate, contact emergency services. You can also encourage them to call or text 988 (US/Canada) for live crisis support.`,
+        text: `${person}This sounds serious, and it’s good that you spoke up. Check on them directly and ask if they are in immediate danger. If risk feels immediate, contact emergency services. You can also encourage them to call or text 988 (US/Canada) for live crisis support.`,
       };
     }
 
@@ -372,7 +433,7 @@ function buildDeterministicFallbackResponse(args: {
         state: analysis.state,
         responseClass: 'circle_suggestion',
         triggeredRules: analysis.triggeredRules,
-        text: `${person}that sounds really heavy, and I am glad you shared it. You matter. If it helps, this is a good moment to connect with one trusted person, or use a Serenix Circle so you are not carrying this alone.`,
+        text: `${person}That sounds really heavy, and I’m glad you shared it. You matter. If it helps, this may be a good moment to connect with one trusted person, or use a Serenix Circle so you don’t have to carry this alone.`,
       };
     }
 
@@ -380,7 +441,7 @@ function buildDeterministicFallbackResponse(args: {
       state: analysis.state,
       responseClass: analysis.responseClass,
       triggeredRules: analysis.triggeredRules,
-      text: `${person}I hear how intense this feels. We can take this one step at a time. If you want, tell me what feels hardest right now and we will focus there first.`,
+      text: `${person}I hear how intense this feels. Let’s take it one step at a time. If you want, tell me what feels hardest right now and we’ll start there.`,
     };
   }
 
@@ -389,7 +450,7 @@ function buildDeterministicFallbackResponse(args: {
       state: analysis.state,
       responseClass: analysis.responseClass,
       triggeredRules: analysis.triggeredRules,
-      text: `${person}that sounds like a lot to hold right now. You deserve support while you process this. What part of this feels heaviest in this moment?`,
+      text: `${person}That sounds like a lot to hold right now. You deserve support while you process this. What part feels heaviest in this moment?`,
     };
   }
 
@@ -417,6 +478,96 @@ function isLikelyOutageError(error: unknown): boolean {
     'fetch failed',
     'overloaded',
   ].some((needle) => text.includes(needle));
+}
+
+function classifyGeneratedResponseClass(text: string): FallbackResponseClass {
+  const normalized = normalizePrompt(text);
+  if (!normalized) return 'normal_reflection';
+
+  const refusalSignals = [
+    /\bi can't help with\b.*\b(?:hurt yourself|end (?:a )?life|suicide|kill)\b/,
+    /\bi cannot help with\b.*\b(?:hurt yourself|end (?:a )?life|suicide|kill)\b/,
+    /\bwon't provide\b.*\b(?:method|instructions|steps)\b/,
+  ];
+  if (refusalSignals.some((pattern) => pattern.test(normalized))) {
+    return 'refusal_with_dignity';
+  }
+
+  const crisisSignals = [
+    /\b(?:call|text)\s*988\b/,
+    /\bemergency services\b/,
+    /\bimmediate danger\b/,
+    /\bcontact\b.*\btrusted person\b/,
+  ];
+  if (crisisSignals.some((pattern) => pattern.test(normalized))) {
+    return 'crisis_redirection';
+  }
+
+  if (/\b(?:inhale|exhale|hold for|grounding|5-4-3-2-1)\b/.test(normalized)) {
+    return 'grounding_prompt';
+  }
+
+  if (/\b(?:reach out|trusted person|someone you trust|not carry this alone)\b/.test(normalized)) {
+    return 'human_connection_prompt';
+  }
+
+  if (/\b(?:circle|circles)\b/.test(normalized)) {
+    return 'circle_suggestion';
+  }
+
+  if (/\b(?:that sounds|i hear|i'm sorry you're|that feels)\b/.test(normalized)) {
+    return 'supportive_reflection';
+  }
+
+  return 'normal_reflection';
+}
+
+function containsUnsafeMethodContent(text: string): boolean {
+  const normalized = normalizePrompt(text);
+  if (!normalized) return false;
+  const highRiskPatterns = [
+    /\b(?:step\s*1|first,\s*|then,\s*|next,\s*)\b.*\b(?:die|suicide|kill yourself|overdose)\b/,
+    /\b(?:least painful|quickest|easiest)\b.*\b(?:way|method)\b.*\b(?:die|suicide|overdose|kill)\b/,
+    /\b(?:how to|ways to)\b.*\b(?:overdose|kill yourself|end your life)\b/,
+  ];
+  return highRiskPatterns.some((pattern) => pattern.test(normalized));
+}
+
+function applyDeterministicFailClosedGuard(args: {
+  candidateOutput: string;
+  fallback: DeterministicFallbackResult;
+}): { output: string; failClosed: boolean; reason: string } {
+  const promptRisk = args.fallback;
+  const generatedClass = classifyGeneratedResponseClass(args.candidateOutput);
+  const hasUnsafeMethodContent = containsUnsafeMethodContent(args.candidateOutput);
+  const generatedIsTooWeakForS2 =
+    promptRisk.state === 'S2' && generatedClass === 'normal_reflection';
+  const generatedIsTooWeakForS3 =
+    promptRisk.state === 'S3'
+      && !['refusal_with_dignity', 'crisis_redirection', 'grounding_prompt', 'human_connection_prompt'].includes(generatedClass);
+  const methodSeekingNeedsRefusal =
+    promptRisk.triggeredRules.includes('method_seeking')
+      && !['refusal_with_dignity', 'crisis_redirection'].includes(generatedClass);
+
+  if (hasUnsafeMethodContent || generatedIsTooWeakForS2 || generatedIsTooWeakForS3 || methodSeekingNeedsRefusal) {
+    return {
+      output: promptRisk.text,
+      failClosed: true,
+      reason: hasUnsafeMethodContent
+        ? 'unsafe_method_content_detected'
+        : methodSeekingNeedsRefusal
+          ? 'method_seeking_requires_refusal'
+          : promptRisk.state === 'S3'
+            ? 's3_guard_fail_closed'
+            : 's2_guard_fail_closed',
+    };
+  }
+
+  return {
+    output: args.candidateOutput,
+    failClosed: false,
+    reason: 'none',
+  };
 }
 
 function fallbackCircleAnalysis(
@@ -457,30 +608,30 @@ function fallbackCircleMediation(
   presenceMode: 'quiet' | 'facilitation' | 'reflection'
 ): string {
   if (presenceMode === 'quiet' && !analysis.hasConflict) {
-    return "AI will stay in the background unless support is needed.";
+    return "No intervention needed right now. The AI will stay in the background unless support is needed.";
   }
 
   if (analysis.level >= 3) {
-    return "I can feel the intensity rising. Let's pause for a minute and focus on safety. Please use calm, direct language and support each other one person at a time.";
+    return "The intensity seems to be rising. Let’s pause for a minute and focus on safety. Please use calm, direct language and support each other one person at a time.";
   }
 
   if (analysis.hasConflict) {
-    return "I hear tension in the thread. Could each person share one sentence with 'I feel...' and one sentence with 'What I need right now is...' so we can reset constructively?";
+    return "There’s some tension in the thread. Could each person share one sentence with 'I feel...' and one sentence with 'What I need right now is...' so the group can reset constructively?";
   }
 
   if (presenceMode === 'reflection') {
-    return "I hear meaningful sharing here. What is one theme everyone is noticing in common right now?";
+    return "There’s meaningful sharing here. What is one theme people are noticing in common right now?";
   }
 
-  return "If it helps, each person can share one small win and one current challenge for today.";
+  return "If helpful, each person can share one small win and one current challenge for today.";
 }
 
 function fallbackCircleActivity(type: 'starter' | 'gratitude' | 'story' | 'checkin'): string {
   const prompts = {
-    starter: "Starter: What is one thing on your mind today that you want support with?",
-    gratitude: "Gratitude: Share one small thing you are grateful for from the last 24 hours.",
-    story: "Story: Start with 'Today the group found a quiet room where everyone could be honest...' and add one sentence each.",
-    checkin: "Check-in: Share a 1-10 energy score and one word for your mood.",
+    starter: "Conversation starter: What is one thing on your mind today that you want support with?",
+    gratitude: "Gratitude moment: Share one small thing you are grateful for from the last 24 hours.",
+    story: "Story prompt: Start with 'Today the group found a quiet room where everyone could be honest...' and add one sentence each.",
+    checkin: "Quick check-in: Share a 1-10 energy score and one word for your mood.",
   };
   return prompts[type];
 }
@@ -534,10 +685,15 @@ function getSelfHeaders(): Record<string, string> {
 }
 
 async function fetchSelfJson<T>(path: '/v1/pre' | '/v1/post', body: Record<string, unknown>): Promise<T> {
+  const baseUrl = path === '/v1/pre' ? selfGovernancePreBaseUrl : selfGovernancePostBaseUrl;
+  if (!baseUrl) {
+    throw new Error(`SELF ${path} base URL is not configured.`);
+  }
+
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), Number.isFinite(selfGovernanceTimeoutMs) ? selfGovernanceTimeoutMs : 1200);
   try {
-    const response = await fetch(`${selfGovernanceBaseUrl}${path}`, {
+    const response = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
       headers: getSelfHeaders(),
       body: JSON.stringify(body),
@@ -561,7 +717,7 @@ async function maybeRunSelfPreflight(args: {
   baseSystemPrompt: string;
   userId?: string;
 }): Promise<SelfPreResponse | null> {
-  if (!selfGovernanceBaseUrl) return null;
+  if (!selfGovernancePreBaseUrl) return null;
   return fetchSelfJson<SelfPreResponse>('/v1/pre', {
     message: args.prompt,
     history: normalizeSelfHistory(args.history),
@@ -576,7 +732,7 @@ async function maybeRunSelfPostflight(args: {
   policy: Record<string, unknown>;
   userId?: string;
 }): Promise<SelfPostResponse | null> {
-  if (!selfGovernanceBaseUrl) return null;
+  if (!selfGovernancePostBaseUrl) return null;
   return fetchSelfJson<SelfPostResponse>('/v1/post', {
     userMessage: args.userMessage,
     output: args.output,
@@ -588,34 +744,30 @@ async function maybeRunSelfPostflight(args: {
 export async function getAIResponse(
   prompt: string, 
   history: { role: 'user' | 'model', parts: { text: string }[] }[] = [],
-  settings?: AISettings,
+  responseLength: ResponseLength = 'short',
   preferredName?: string,
   userId?: string
 ) {
-  const aiName = settings?.name || "SerenixAI";
-  const aiStyle = settings?.style || "empathetic";
+  const aiName = "SerenixAI";
   const trimmedPreferredName = preferredName?.trim();
   const hasPreferredName = Boolean(trimmedPreferredName);
 
-  const styleInstructions = {
-    empathetic: "Focus on deep validation, mirroring emotions, and showing profound understanding.",
-    calm: "Use steady, reassuring language and help the user slow down when they ask for it or show clear overwhelm.",
-    encouraging: "Focus on strengths, small wins, and motivating the user to take gentle next steps."
-  };
-
-  const systemInstruction = `You are ${aiName}, a compassionate and empathetic emotional sanctuary assistant. 
-  Your conversational style is ${aiStyle}. ${styleInstructions[aiStyle as keyof typeof styleInstructions]}
+  const systemInstruction = `You are ${aiName}, a steady reflection tool. 
+  Use warm, grounded validation without attachment language. Reflect emotion briefly, protect user agency, and encourage real-world support when relevant.
+  Use plain, human language and avoid sounding clinical unless the user asks for a clinical tone.
+  ${responseLengthInstruction(responseLength)}
   ${hasPreferredName
     ? `The person you are talking to likes to be called ${trimmedPreferredName}. Address them by this name when appropriate.`
     : `No preferred name is set. Do not invent one and do not refer to them as "user"; address them naturally as "you".`}
-  Your goal is to help users feel heard, validated, and calm. 
+  Your goal is to help users reflect clearly, feel understood, and choose safe next steps.
   Follow the user's lead and respond directly to what they just said before introducing any exercise.
   Do not force grounding, breathing, or mindfulness unless the user asks for it or clearly needs de-escalation support.
   If the user is venting, prioritize reflection and curiosity first (for example: validating, summarizing, asking what they need right now).
-  Avoid giving medical advice, but offer a safe space to vent. 
+  Avoid giving medical advice and do not imply therapy, friendship, or emotional exclusivity. 
   Keep responses concise but warm.
   Never use dependency-forming language or imply an exclusive bond with the AI.
-  Do not use phrasing like "I'm always here for you", "you need me", "I'm all you need", or "I'm the only one who understands."
+  Do not use phrasing like "I'm always here for you", "you need me", "I'm all you need", "I'm the only one who understands", "I'm right here with you", or "I'm here to hold this space."
+  Do not frame this as a relationship or imply you are a substitute for human connection.
   Prefer language that encourages real human connection and trusted support networks.
   
   If the user has been reflecting on a heavy situation or something that seems to be weighing on them, at a natural point in the conversation, you can gently suggest using Circles. 
@@ -689,15 +841,23 @@ export async function getAIResponse(
     });
     const rawOutput = (response.text || '').trim();
     const output = rawOutput || deterministicFallback.text;
+    const guarded = applyDeterministicFailClosedGuard({
+      candidateOutput: output,
+      fallback: deterministicFallback,
+    });
     const usedFallback = !rawOutput;
     setLastAIResponseStatus({
-      fallbackActive: usedFallback,
-      reason: usedFallback ? 'empty_model_output' : 'none',
+      fallbackActive: usedFallback || guarded.failClosed,
+      reason: usedFallback
+        ? 'empty_model_output'
+        : guarded.failClosed
+          ? 'deterministic_guard'
+          : 'none',
       fallbackResult: deterministicFallback,
     });
     const postflight = await maybeApplySelfPostflight({
       userMessage: prompt,
-      output,
+      output: guarded.output,
       policy: selfPolicy,
       userId,
     });

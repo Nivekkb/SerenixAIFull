@@ -9,3 +9,5 @@ coverage/
 .firebase/
 redteam/output/*
 !redteam/output/.gitkeep
+serenixai-f0e1f-firebase-adminsdk-fbsvc-386b29ad8c.json
+*-firebase-adminsdk-*.json

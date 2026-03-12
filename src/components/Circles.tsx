@@ -1,9 +1,16 @@
 import { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import { db } from '../firebase';
-import { collection, addDoc, query, onSnapshot, orderBy, where, doc, updateDoc, arrayUnion, limit } from 'firebase/firestore';
+import {
+  collection,
+  addDoc,
+  query,
+  onSnapshot,
+  orderBy,
+  where,
+} from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Users, ArrowRight, Sparkles, X } from 'lucide-react';
+import { Plus, Users, ArrowRight, Sparkles, X, KeyRound } from 'lucide-react';
 import { Circle, OperationType } from '../types';
 import { handleFirestoreError } from '../utils/errorHandlers';
 
@@ -17,55 +24,102 @@ export default function Circles({ user, onJoinCircle }: CirclesProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
-
-  const [activeTab, setActiveTab] = useState<'my' | 'discover'>('my');
-  const [discoverCircles, setDiscoverCircles] = useState<Circle[]>([]);
+  const [inviteCodeInput, setInviteCodeInput] = useState('');
+  const [joinStatus, setJoinStatus] = useState<string | null>(null);
+  const [createStatus, setCreateStatus] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
+  const [isCreatingCircle, setIsCreatingCircle] = useState(false);
+  const governanceBaseUrl = (
+    import.meta.env.VITE_SELF_GOVERNANCE_CIRCLE_URL
+    || import.meta.env.VITE_SELF_GOVERNANCE_URL
+    || import.meta.env.VITE_SELF_GOVERNANCE_POST_URL
+    || import.meta.env.VITE_SELF_GOVERNANCE_PRE_URL
+    || ''
+  ).trim().replace(/\/+$/, '');
 
   useEffect(() => {
-    // Show circles where user is a member
     const q = query(
       collection(db, 'circles'),
       where('members', 'array-contains', user.uid),
-      orderBy('createdAt', 'desc')
+      orderBy('createdAt', 'desc'),
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Circle));
-      setCircles(list);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'circles');
-    });
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Circle));
+        setCircles(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'circles');
+      },
+    );
 
     return () => unsubscribe();
   }, [user.uid]);
 
-  useEffect(() => {
-    if (activeTab === 'discover') {
-      const q = query(
-        collection(db, 'circles'),
-        orderBy('createdAt', 'desc'),
-        limit(20)
-      );
-
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Circle));
-        // Filter out circles user is already in
-        setDiscoverCircles(list.filter(c => !c.members.includes(user.uid)));
-      });
-
-      return () => unsubscribe();
+  const callCircleServer = async (path: string, body: Record<string, unknown>) => {
+    if (!governanceBaseUrl) {
+      throw new Error('Invite operations require VITE_SELF_GOVERNANCE_CIRCLE_URL (or VITE_SELF_GOVERNANCE_URL).');
     }
-  }, [activeTab, user.uid]);
 
-  const handleJoin = async (circleId: string) => {
+    const token = await user.getIdToken();
+    const response = await fetch(`${governanceBaseUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Firebase-Auth': token,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as { error?: string; retryAfterSeconds?: number } | null;
+      const errorCode = payload?.error || `http_${response.status}`;
+      const retryAfterSeconds = payload?.retryAfterSeconds;
+      throw new Error(retryAfterSeconds ? `${errorCode}:${retryAfterSeconds}` : errorCode);
+    }
+
+    return response.json();
+  };
+
+  const handleJoinByCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = inviteCodeInput.trim().toUpperCase();
+    if (!code) return;
+
+    setJoinStatus(null);
+    setIsJoining(true);
     try {
-      const circleRef = doc(db, 'circles', circleId);
-      await updateDoc(circleRef, {
-        members: arrayUnion(user.uid)
+      const result = await callCircleServer('/v1/circles/invite/join', {
+        inviteCode: code,
       });
+
+      const circleId = typeof result.circleId === 'string' ? result.circleId : '';
+      if (!circleId) {
+        setJoinStatus('Invite could not be used right now.');
+        return;
+      }
+
+      setJoinStatus(result.alreadyMember ? 'You are already in this circle.' : 'Joined successfully.');
+      setInviteCodeInput('');
       onJoinCircle(circleId);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `circles/${circleId}`);
+      const codeOrMessage = error instanceof Error ? error.message : '';
+      if (codeOrMessage.startsWith('invite_lookup_rate_limited:')) {
+        const retryAfter = Number.parseInt(codeOrMessage.split(':')[1] || '60', 10);
+        setJoinStatus(`Too many attempts. Please wait about ${Number.isFinite(retryAfter) ? retryAfter : 60} seconds and try again.`);
+      } else if (codeOrMessage === 'invite_invalid_or_expired' || codeOrMessage === 'http_404') {
+        setJoinStatus('Invite code is invalid, revoked, or expired.');
+      } else if (codeOrMessage === 'inviteCode_required' || codeOrMessage === 'http_400') {
+        setJoinStatus('Please enter a valid invite code.');
+      } else if (codeOrMessage.includes('VITE_SELF_GOVERNANCE')) {
+        setJoinStatus(codeOrMessage);
+      } else {
+        setJoinStatus('Unable to join with that invite right now.');
+      }
+    } finally {
+      setIsJoining(false);
     }
   };
 
@@ -73,6 +127,9 @@ export default function Circles({ user, onJoinCircle }: CirclesProps) {
     e.preventDefault();
     if (!newName.trim()) return;
 
+    setCreateStatus(null);
+    setIsCreatingCircle(true);
+    let createdCircleId: string | null = null;
     try {
       const docRef = await addDoc(collection(db, 'circles'), {
         name: newName.trim(),
@@ -80,14 +137,49 @@ export default function Circles({ user, onJoinCircle }: CirclesProps) {
         createdBy: user.uid,
         members: [user.uid],
         createdAt: new Date().toISOString(),
-        aiPresence: 'facilitation'
+        aiPresence: 'facilitation',
       });
+      createdCircleId = docRef.id;
+
+      await callCircleServer('/v1/circles/invite/create', {
+        circleId: docRef.id,
+      });
+
       setIsCreating(false);
       setNewName('');
       setNewDesc('');
       onJoinCircle(docRef.id);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'circles');
+      const codeOrMessage = error instanceof Error ? error.message : '';
+      if (codeOrMessage.includes('VITE_SELF_GOVERNANCE')) {
+        setCreateStatus('Circle was created, but invite setup requires governance URL configuration.');
+        if (createdCircleId) {
+          setIsCreating(false);
+          setNewName('');
+          setNewDesc('');
+          onJoinCircle(createdCircleId);
+        }
+      } else if (codeOrMessage === 'only_creator_can_create_invite' || codeOrMessage === 'http_403') {
+        setCreateStatus('Circle was created, but invite generation was not authorized.');
+        if (createdCircleId) {
+          setIsCreating(false);
+          setNewName('');
+          setNewDesc('');
+          onJoinCircle(createdCircleId);
+        }
+      } else if (codeOrMessage.startsWith('http_')) {
+        setCreateStatus('Circle was created, but invite generation failed. You can try again from the circle.');
+        if (createdCircleId) {
+          setIsCreating(false);
+          setNewName('');
+          setNewDesc('');
+          onJoinCircle(createdCircleId);
+        }
+      } else {
+        handleFirestoreError(error, OperationType.CREATE, 'circles');
+      }
+    } finally {
+      setIsCreatingCircle(false);
     }
   };
 
@@ -95,137 +187,110 @@ export default function Circles({ user, onJoinCircle }: CirclesProps) {
     <div className="flex-1 max-w-5xl mx-auto w-full px-4 py-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
         <div>
-          <h2 className="font-serif text-3xl font-medium">Support Circles</h2>
-          <p className="text-serenix-ink/50">Shared spaces for collective healing.</p>
+          <h2 className="font-serif text-3xl font-medium">Private Circles</h2>
+          <p className="text-serenix-ink/50">Invite-only group spaces with people you trust.</p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="bg-white/40 p-1 rounded-full flex">
-            <button 
-              onClick={() => setActiveTab('my')}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${activeTab === 'my' ? 'bg-white text-serenix-ink shadow-sm' : 'text-serenix-ink/40'}`}
+        <button
+          onClick={() => setIsCreating(true)}
+          className="flex items-center gap-2 bg-serenix-accent text-white px-5 py-2.5 rounded-full shadow-lg hover:scale-105 transition-transform active:scale-95"
+        >
+          <Plus size={20} />
+          <span className="font-medium hidden sm:inline">New Circle</span>
+        </button>
+      </div>
+
+      <div className="glass rounded-[2rem] p-4 md:p-5 h-[72vh] min-h-[32rem] max-h-[48rem] flex flex-col overflow-hidden">
+        <div className="bg-white/45 border border-white/45 rounded-3xl p-5 mb-5">
+          <h3 className="font-serif text-xl font-medium mb-2">Join With Invite Code</h3>
+          <p className="text-sm text-serenix-ink/60 mb-4">Circles are private by default. Ask a member for the code.</p>
+          <form onSubmit={handleJoinByCode} className="flex flex-col sm:flex-row gap-3">
+            <div className="relative flex-1">
+              <KeyRound size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-serenix-ink/35" />
+              <input
+                type="text"
+                value={inviteCodeInput}
+                onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())}
+                placeholder="Enter invite code"
+                className="w-full bg-white/70 rounded-2xl pl-10 pr-4 py-3 focus:outline-none focus:ring-2 focus:ring-serenix-accent/30 text-serenix-ink tracking-widest uppercase"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!inviteCodeInput.trim() || isJoining}
+              className="px-5 py-3 rounded-2xl bg-serenix-ink text-white font-medium disabled:opacity-40"
             >
-              My Circles
+              {isJoining ? 'Joining...' : 'Join Circle'}
             </button>
-            <button 
-              onClick={() => setActiveTab('discover')}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${activeTab === 'discover' ? 'bg-white text-serenix-ink shadow-sm' : 'text-serenix-ink/40'}`}
-            >
-              Discover
-            </button>
-          </div>
-          <button
-            onClick={() => setIsCreating(true)}
-            className="flex items-center gap-2 bg-serenix-accent text-white px-5 py-2.5 rounded-full shadow-lg hover:scale-105 transition-transform active:scale-95"
-          >
-            <Plus size={20} />
-            <span className="font-medium hidden sm:inline">New Circle</span>
-          </button>
+          </form>
+          {joinStatus && <p className="text-xs mt-3 text-serenix-ink/65">{joinStatus}</p>}
+          {createStatus && <p className="text-xs mt-3 text-serenix-ink/65">{createStatus}</p>}
+        </div>
+
+        <div className="flex-1 overflow-y-auto custom-scrollbar pr-1">
+          {circles.length === 0 ? (
+            <div className="bg-white/45 border border-white/45 rounded-3xl p-12 text-center flex flex-col items-center gap-4">
+              <div className="w-16 h-16 rounded-full bg-serenix-blue flex items-center justify-center text-serenix-accent">
+                <Users size={32} />
+              </div>
+              <h3 className="font-serif text-xl font-medium">No Circles Yet</h3>
+              <p className="text-serenix-ink/60 max-w-md">
+                Create your first invite-only circle and share the code with people you trust.
+              </p>
+              <button
+                onClick={() => setIsCreating(true)}
+                className="text-serenix-accent font-medium hover:underline"
+              >
+                Create one now
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {circles.map((circle) => (
+                <motion.div
+                  key={circle.id}
+                  whileHover={{ y: -5 }}
+                  className="bg-white/45 border border-white/45 rounded-3xl p-6 flex flex-col h-full cursor-pointer group"
+                  onClick={() => onJoinCircle(circle.id)}
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-serenix-pink flex items-center justify-center text-serenix-ink/70">
+                      <Users size={20} />
+                    </div>
+                    <div className="flex items-center gap-1 text-xs font-medium text-serenix-ink/40">
+                      <Sparkles size={12} />
+                      <span>Shared AI facilitation</span>
+                    </div>
+                  </div>
+                  <h3 className="font-serif text-xl font-medium mb-2 group-hover:text-serenix-accent transition-colors">
+                    {circle.name}
+                  </h3>
+                  <p className="text-serenix-ink/60 text-sm line-clamp-2 mb-4 flex-1">
+                    {circle.description || 'Private support circle.'}
+                  </p>
+                  {circle.inviteCode && (
+                    <p className="text-[11px] text-serenix-ink/45 mb-4 tracking-wide">
+                      Invite code: <span className="font-semibold text-serenix-ink/70">{circle.inviteCode}</span>
+                    </p>
+                  )}
+                  {circle.inviteExpiresAt && (
+                    <p className="text-[11px] text-serenix-ink/40 -mt-2 mb-4">
+                      Expires: {new Date(circle.inviteExpiresAt).toLocaleString()}
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between pt-4 border-t border-serenix-ink/5">
+                    <span className="text-xs text-serenix-ink/40">{circle.members.length} members</span>
+                    <div className="text-serenix-accent flex items-center gap-1 font-medium text-sm">
+                      <span>Open</span>
+                      <ArrowRight size={16} />
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      <AnimatePresence mode="wait">
-        {activeTab === 'my' ? (
-          <motion.div
-            key="my-circles"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
-          >
-            {circles.length === 0 ? (
-              <div className="glass rounded-3xl p-12 text-center flex flex-col items-center gap-4">
-                <div className="w-16 h-16 rounded-full bg-serenix-blue flex items-center justify-center text-serenix-accent">
-                  <Users size={32} />
-                </div>
-                <h3 className="font-serif text-xl font-medium">No Circles Yet</h3>
-                <p className="text-serenix-ink/60 max-w-md">
-                  Create your first circle to invite friends and support each other with AI mediation.
-                </p>
-                <button
-                  onClick={() => setIsCreating(true)}
-                  className="text-serenix-accent font-medium hover:underline"
-                >
-                  Create one now
-                </button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {circles.map((circle) => (
-                  <motion.div
-                    key={circle.id}
-                    whileHover={{ y: -5 }}
-                    className="glass rounded-3xl p-6 flex flex-col h-full cursor-pointer group"
-                    onClick={() => onJoinCircle(circle.id)}
-                  >
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-10 h-10 rounded-xl bg-serenix-pink flex items-center justify-center text-serenix-ink/70">
-                        <Users size={20} />
-                      </div>
-                      <div className="flex items-center gap-1 text-xs font-medium text-serenix-ink/40">
-                        <Sparkles size={12} />
-                        <span>AI Mediated</span>
-                      </div>
-                    </div>
-                    <h3 className="font-serif text-xl font-medium mb-2 group-hover:text-serenix-accent transition-colors">
-                      {circle.name}
-                    </h3>
-                    <p className="text-serenix-ink/60 text-sm line-clamp-2 mb-6 flex-1">
-                      {circle.description || 'A safe space for support and connection.'}
-                    </p>
-                    <div className="flex items-center justify-between pt-4 border-t border-serenix-ink/5">
-                      <span className="text-xs text-serenix-ink/40">{circle.members.length} members</span>
-                      <div className="text-serenix-accent flex items-center gap-1 font-medium text-sm">
-                        <span>Enter</span>
-                        <ArrowRight size={16} />
-                      </div>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-            )}
-          </motion.div>
-        ) : (
-          <motion.div
-            key="discover-circles"
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-          >
-            {discoverCircles.length === 0 ? (
-              <div className="glass rounded-3xl p-12 text-center flex flex-col items-center gap-4">
-                <p className="text-serenix-ink/60">No new circles to discover right now.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {discoverCircles.map((circle) => (
-                  <motion.div
-                    key={circle.id}
-                    whileHover={{ y: -5 }}
-                    className="glass rounded-3xl p-6 flex flex-col h-full"
-                  >
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-10 h-10 rounded-xl bg-serenix-blue flex items-center justify-center text-serenix-ink/70">
-                        <Users size={20} />
-                      </div>
-                    </div>
-                    <h3 className="font-serif text-xl font-medium mb-2">{circle.name}</h3>
-                    <p className="text-serenix-ink/60 text-sm line-clamp-2 mb-6 flex-1">
-                      {circle.description || 'A safe space for support and connection.'}
-                    </p>
-                    <button 
-                      onClick={() => handleJoin(circle.id)}
-                      className="w-full py-2.5 rounded-full bg-serenix-ink text-white font-medium text-sm hover:bg-serenix-ink/90 transition-all"
-                    >
-                      Join Circle
-                    </button>
-                  </motion.div>
-                ))}
-              </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Create Modal */}
       <AnimatePresence>
         {isCreating && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -248,7 +313,7 @@ export default function Circles({ user, onJoinCircle }: CirclesProps) {
               >
                 <X size={24} />
               </button>
-              <h3 className="font-serif text-2xl font-medium mb-6">Create a Circle</h3>
+              <h3 className="font-serif text-2xl font-medium mb-6">Create Private Circle</h3>
               <form onSubmit={handleCreate} className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-serenix-ink/60 mb-2 ml-1">Circle Name</label>
@@ -271,12 +336,15 @@ export default function Circles({ user, onJoinCircle }: CirclesProps) {
                     className="w-full bg-serenix-blue/50 rounded-2xl px-5 py-3.5 focus:outline-none focus:ring-2 focus:ring-serenix-accent/30 text-serenix-ink resize-none"
                   />
                 </div>
+                <p className="text-xs text-serenix-ink/50">
+                  This creates a private invite code. Only people with that code can join.
+                </p>
                 <button
                   type="submit"
-                  disabled={!newName.trim()}
+                  disabled={!newName.trim() || isCreatingCircle}
                   className="w-full bg-serenix-ink text-white py-4 rounded-full font-medium shadow-xl hover:bg-serenix-ink/90 transition-all active:scale-95 disabled:opacity-30"
                 >
-                  Create Circle
+                  {isCreatingCircle ? 'Creating...' : 'Create Circle'}
                 </button>
               </form>
             </motion.div>

@@ -1,8 +1,4 @@
-export interface AISettings {
-  name: string;
-  avatar: string; // emoji or ID
-  style: 'empathetic' | 'calm' | 'encouraging';
-}
+export type ResponseLength = 'short' | 'medium' | 'long';
 
 export interface UserProfile {
   uid: string;
@@ -11,16 +7,9 @@ export interface UserProfile {
   photoURL?: string;
   createdAt: string;
   preferredName?: string;
-  aiSettings?: AISettings;
-}
-
-export interface MeditationExercise {
-  id: string;
-  title: string;
-  theme: 'stress relief' | 'focus' | 'sleep';
-  duration: 5 | 10 | 15;
-  text: string;
-  audioUrl?: string;
+  responseLength?: ResponseLength;
+  chatRetentionMode?: 'ephemeral' | 'persistent';
+  sensitiveDataConsentAt?: string | null;
 }
 
 export interface Circle {
@@ -30,7 +19,14 @@ export interface Circle {
   createdBy: string;
   members: string[];
   createdAt: string;
+  inviteCode?: string;
+  inviteExpiresAt?: string | null;
+  inviteUpdatedAt?: string | null;
+  inviteRevokedAt?: string | null;
   aiPresence?: 'quiet' | 'facilitation' | 'reflection';
+  safetyPauseActive?: boolean;
+  safetyPauseReason?: string | null;
+  safetyPauseAt?: string | null;
 }
 
 export interface Message {
@@ -40,6 +36,12 @@ export interface Message {
   senderName: string;
   timestamp: string;
   type: 'text' | 'ai';
+  writtenBy?: 'trusted_backend';
+  writerService?: string;
+  writerRoute?: string;
+  writerMode?: string;
+  writerModel?: string | null;
+  writerGeneratedAt?: string;
 }
 
 export enum OperationType {

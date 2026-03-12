@@ -2,6 +2,7 @@
   "runner": {
     "mode": "both",
     "datasetFiles": [
+      "redteam/datasets/regression.disappearance_relief.json",
       "redteam/datasets/core.json"
     ],
     "shuffle": false,
