@@ -184,7 +184,7 @@ export default function AISettings({ user }: AISettingsProps) {
           </label>
 
           <p className="text-xs text-serenix-ink/55 mb-4">
-            In persistent mode, saved transcripts include both what you wrote and what the AI replied, so you can review the full exchange later.
+            In persistent mode, saved transcripts include both what you wrote and what the AI replied, and users can download the full transcript later if needed.
           </p>
 
           <button

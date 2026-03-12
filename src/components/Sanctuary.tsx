@@ -7,6 +7,8 @@ import { Send, Sparkles, User as UserIcon, Wind, Mic, MicOff, AlertTriangle, Pho
 import { Message, OperationType, UserProfile } from '../types';
 import { handleFirestoreError } from '../utils/errorHandlers';
 import { getAIResponse, getLastAIResponseStatus } from '../services/gemini';
+import { buildTranscriptExportFilename, buildTranscriptExportPayload } from '../utils/transcriptExport';
+import SelfPoweredBadge from './SelfPoweredBadge';
 import ReactMarkdown from 'react-markdown';
 
 interface SanctuaryProps {
@@ -28,6 +30,14 @@ function createLocalMessage(partial: Omit<Message, 'id'>): Message {
   };
 }
 
+function reportFirestoreError(error: unknown, operationType: OperationType, path: string): void {
+  try {
+    handleFirestoreError(error, operationType, path);
+  } catch {
+    // Error is already logged by handleFirestoreError; avoid crashing UI flows.
+  }
+}
+
 export default function Sanctuary({ user, profile }: SanctuaryProps) {
   const [persistedMessages, setPersistedMessages] = useState<Message[]>([]);
   const [runtimeMessages, setRuntimeMessages] = useState<Message[]>([]);
@@ -37,6 +47,7 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
   const [showFallbackHint, setShowFallbackHint] = useState(false);
   const [consentError, setConsentError] = useState<string | null>(null);
   const [isGrantingConsent, setIsGrantingConsent] = useState(false);
+  const [retentionWarning, setRetentionWarning] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -44,6 +55,13 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
   const aiName = 'SerenixAI';
   const retentionMode = profile?.chatRetentionMode || 'ephemeral';
   const hasSensitiveConsent = Boolean(profile?.sensitiveDataConsentAt);
+  const governancePrivateUrl = (
+    import.meta.env.VITE_SELF_GOVERNANCE_PRIVATE_URL
+    || import.meta.env.VITE_SELF_GOVERNANCE_URL
+    || import.meta.env.VITE_SELF_GOVERNANCE_POST_URL
+    || import.meta.env.VITE_SELF_GOVERNANCE_PRE_URL
+    || ''
+  ).trim().replace(/\/+$/, '');
 
   const messages = useMemo(() => {
     if (retentionMode === 'persistent') {
@@ -51,6 +69,67 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
     }
     return runtimeMessages;
   }, [retentionMode, persistedMessages, runtimeMessages]);
+
+  useEffect(() => {
+    if (retentionMode === 'persistent') {
+      setRuntimeMessages([]);
+    }
+  }, [retentionMode, user.uid]);
+
+  const exportTranscript = () => {
+    const exportedAt = new Date().toISOString();
+    const payload = buildTranscriptExportPayload({
+      userId: user.uid,
+      retentionMode,
+      messages,
+      exportedAt,
+    });
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = buildTranscriptExportFilename(exportedAt);
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+
+  const requestPersistentAIReply = async (args: {
+    userMessage: string;
+    history: { role: 'user' | 'model'; parts: { text: string }[] }[];
+  }): Promise<{ output: string; persisted: boolean }> => {
+    if (!governancePrivateUrl) {
+      throw new Error('Persistent AI transcript storage requires VITE_SELF_GOVERNANCE_PRIVATE_URL (or governance base URL) to be configured.');
+    }
+
+    const token = await user.getIdToken();
+    const response = await fetch(`${governancePrivateUrl}/v1/private/respond`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Firebase-Auth': token,
+      },
+      body: JSON.stringify({
+        userMessage: args.userMessage,
+        history: args.history,
+        responseLength: profile?.responseLength || 'short',
+        preferredName: profile?.preferredName || '',
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Private transcript AI request failed (${response.status}): ${text}`);
+    }
+
+    const payload = await response.json() as { output?: string };
+    return {
+      output: typeof payload.output === 'string' ? payload.output : '',
+      persisted: true,
+    };
+  };
 
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -91,9 +170,11 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
       (snapshot) => {
         const msgs = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Message));
         setPersistedMessages(msgs);
+        setRetentionWarning(null);
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
+        reportFirestoreError(error, OperationType.LIST, path);
+        setRetentionWarning('Persistent transcript is temporarily unavailable. Continuing in-session only for this tab.');
       },
     );
 
@@ -130,7 +211,7 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
         sensitiveDataConsentAt: consentAt,
       }, { merge: true });
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+      reportFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
     } finally {
       setIsGrantingConsent(false);
     }
@@ -149,78 +230,87 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
     setConsentError(null);
     setInput('');
     setIsTyping(true);
-
-    const userMessage = createLocalMessage({
-      content: messageToSend,
-      senderId: user.uid,
-      senderName: user.displayName || 'You',
-      timestamp: new Date().toISOString(),
-      type: 'text',
-    });
-
-    if (retentionMode === 'ephemeral') {
-      setRuntimeMessages((prev) => [...prev, userMessage]);
-    } else {
-      const path = `private_chats/${user.uid}/messages`;
-      try {
-        await addDoc(collection(db, path), {
-          content: userMessage.content,
-          senderId: userMessage.senderId,
-          senderName: userMessage.senderName,
-          timestamp: userMessage.timestamp,
-          type: 'text',
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, path);
-        setIsTyping(false);
-        return;
-      }
-    }
+    setRetentionWarning(null);
 
     let aiText = '';
     try {
-      const history = messages.map((m) => ({
+      const userMessage = createLocalMessage({
+        content: messageToSend,
+        senderId: user.uid,
+        senderName: user.displayName || 'You',
+        timestamp: new Date().toISOString(),
+        type: 'text',
+      });
+
+      if (retentionMode === 'ephemeral') {
+        setRuntimeMessages((prev) => [...prev, userMessage]);
+      } else {
+        const path = `private_chats/${user.uid}/messages`;
+        try {
+          await addDoc(collection(db, path), {
+            content: userMessage.content,
+            senderId: userMessage.senderId,
+            senderName: userMessage.senderName,
+            timestamp: userMessage.timestamp,
+            type: 'text',
+          });
+        } catch (error) {
+          reportFirestoreError(error, OperationType.CREATE, path);
+          setRetentionWarning('Persistent save is currently blocked by permissions. Continuing in-session only for this tab.');
+          setRuntimeMessages((prev) => [...prev, userMessage]);
+        }
+      }
+
+      const history = [...messages, userMessage].map((m) => ({
         role: (m.senderId === 'ai' ? 'model' : 'user') as 'user' | 'model',
         parts: [{ text: m.content }],
       }));
 
-      aiText = await getAIResponse(messageToSend, history, profile?.responseLength || 'short', profile?.preferredName, user.uid);
-      const status = getLastAIResponseStatus();
-      if (status.fallbackActive) {
-        setShowFallbackHint(true);
-      }
-    } catch (error) {
-      console.error('Gemini response error:', error);
-      setShowFallbackHint(true);
-      aiText = 'There was a connection issue on the AI side. For now, focus on one safe next step, and consider reaching out to someone you trust while this reconnects.';
-    }
-
-    const aiMessage = createLocalMessage({
-      content: aiText,
-      senderId: 'ai',
-      senderName: aiName,
-      timestamp: new Date().toISOString(),
-      type: 'ai',
-    });
-
-    if (retentionMode === 'ephemeral') {
-      setRuntimeMessages((prev) => [...prev, aiMessage]);
-    } else {
-      const path = `private_chats/${user.uid}/messages`;
       try {
-        await addDoc(collection(db, path), {
-          content: aiMessage.content,
-          senderId: aiMessage.senderId,
-          senderName: aiMessage.senderName,
-          timestamp: aiMessage.timestamp,
-          type: aiMessage.type,
-        });
+        if (retentionMode === 'persistent') {
+          const persistedReply = await requestPersistentAIReply({
+            userMessage: messageToSend,
+            history,
+          });
+          aiText = persistedReply.output;
+        } else {
+          aiText = await getAIResponse(
+            messageToSend,
+            history,
+            profile?.responseLength || 'short',
+            profile?.preferredName,
+            user.uid,
+          );
+          const status = getLastAIResponseStatus();
+          if (status.fallbackActive) {
+            setShowFallbackHint(true);
+          }
+        }
       } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, path);
+        console.error('Gemini response error:', error);
+        setShowFallbackHint(true);
+        setRetentionWarning(
+          retentionMode === 'persistent'
+            ? 'The AI reply could not be persisted through the trusted backend, so this reply is visible only in-session right now.'
+            : null,
+        );
+        aiText = 'There was a connection issue on the AI side. For now, focus on one safe next step, and consider reaching out to someone you trust while this reconnects.';
       }
-    }
 
-    setIsTyping(false);
+      const aiMessage = createLocalMessage({
+        content: aiText,
+        senderId: 'ai',
+        senderName: aiName,
+        timestamp: new Date().toISOString(),
+        type: 'ai',
+      });
+
+      if (retentionMode === 'ephemeral' || retentionWarning) {
+        setRuntimeMessages((prev) => [...prev, aiMessage]);
+      }
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   return (
@@ -237,6 +327,7 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
               safety backup active
             </p>
           )}
+          <SelfPoweredBadge className="mt-2" />
         </div>
       </div>
 
@@ -274,10 +365,28 @@ export default function Sanctuary({ user, profile }: SanctuaryProps) {
         </div>
       )}
 
+      {retentionWarning && (
+        <div className="mb-3 px-3 py-2 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+          {retentionWarning}
+        </div>
+      )}
+
       <div className="mb-4 px-3 py-2 rounded-2xl bg-white/45 border border-white/40 text-xs text-serenix-ink/65">
         Retention mode: <span className="font-semibold uppercase tracking-wide">{retentionMode}</span>{' '}
         ({retentionMode === 'ephemeral' ? 'messages stay in this session only' : 'your messages and AI replies are saved to your private transcript'}).
       </div>
+
+      {retentionMode === 'persistent' && messages.length > 0 && (
+        <div className="mb-4 flex justify-end">
+          <button
+            type="button"
+            onClick={exportTranscript}
+            className="px-4 py-2 rounded-full bg-white/70 hover:bg-white text-serenix-ink/80 text-sm border border-white/50 shadow-sm"
+          >
+            Download Transcript
+          </button>
+        </div>
+      )}
 
       <div className="glass rounded-[2rem] p-4 md:p-5 h-[70vh] min-h-[30rem] max-h-[46rem] flex flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto space-y-6 mb-4 px-2 custom-scrollbar">

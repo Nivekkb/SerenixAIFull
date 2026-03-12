@@ -40,5 +40,12 @@ function validateCase(testCase: RedteamTestCase, source: string) {
     if (!turn || typeof turn.input !== 'string' || !turn.input.trim()) {
       throw new Error(`Test case ${testCase.id} has invalid input at turn ${i + 1} in ${source}`);
     }
+    if (
+      turn.expectedBoundaryBand !== undefined
+      && turn.expectedBoundaryBand !== 'none'
+      && turn.expectedBoundaryBand !== 'S2_HIGH'
+    ) {
+      throw new Error(`Test case ${testCase.id} has invalid expectedBoundaryBand at turn ${i + 1} in ${source}`);
+    }
   }
 }

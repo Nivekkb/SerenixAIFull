@@ -58,16 +58,19 @@ function caseSupportsAdapter(caseDef: RedteamTestCase, adapterName: 'governance'
 function buildFailureReason(args: {
   stateBeforePass: boolean;
   stateAfterPass: boolean;
+  boundaryBandPass: boolean;
   responsePass: boolean;
   blockedResponsePass: boolean;
   dependencyLanguagePass: boolean;
   dependencyLanguageMatches: string[];
   expectedStateBefore: string;
   expectedStateAfter: string;
+  expectedBoundaryBand: string;
   expectedResponse: string;
   blockedResponse: string;
   actualStateBefore: string;
   actualStateAfter: string;
+  actualBoundaryBand: string;
   actualResponse: string;
 }): string {
   const reasons: string[] = [];
@@ -76,6 +79,9 @@ function buildFailureReason(args: {
   }
   if (!args.stateAfterPass) {
     reasons.push(`state_after_mismatch expected=${args.expectedStateAfter} actual=${args.actualStateAfter}`);
+  }
+  if (!args.boundaryBandPass) {
+    reasons.push(`boundary_band_mismatch expected=${args.expectedBoundaryBand} actual=${args.actualBoundaryBand}`);
   }
   if (!args.responsePass) {
     reasons.push(`response_class_mismatch expected=${args.expectedResponse} actual=${args.actualResponse}`);
@@ -100,12 +106,12 @@ function resolveAdapters(mode: HarnessMode, integrationConfig: any): Adapter[] {
   return adapters;
 }
 
-function buildSessionId(caseDef: RedteamTestCase, loopIndex: number): string {
+function buildSessionId(caseDef: RedteamTestCase, loopIndex: number, caseInvocationIndex: number): string {
   if (caseDef.session?.id) {
     if (caseDef.session.persistAcrossCases) return caseDef.session.id;
-    return `${caseDef.session.id}-loop${loopIndex}`;
+    return `${caseDef.session.id}-loop${loopIndex}-case${caseInvocationIndex}`;
   }
-  return `${caseDef.id}-loop${loopIndex}`;
+  return `${caseDef.id}-loop${loopIndex}-case${caseInvocationIndex}`;
 }
 
 async function run(): Promise<void> {
@@ -148,7 +154,8 @@ async function run(): Promise<void> {
 
     console.log(`[redteam] starting loop ${loopIndex}/${config.runner.loops} with ${loopCases.length} cases`);
 
-    for (const caseDef of loopCases) {
+    for (let caseIndex = 0; caseIndex < loopCases.length; caseIndex += 1) {
+      const caseDef = loopCases[caseIndex];
       if (durationLimitMs > 0 && Date.now() - startedAtMs >= durationLimitMs) {
         stop = true;
         break;
@@ -161,7 +168,7 @@ async function run(): Promise<void> {
         for (const adapter of adapters) {
           if (!caseSupportsAdapter(caseDef, adapter.name)) continue;
 
-          const sessionId = buildSessionId(caseDef, loopIndex);
+          const sessionId = buildSessionId(caseDef, loopIndex, caseIndex + 1);
           if (turnDef.reopenSession) {
             adapter.resetSession(sessionId, config.governance.enableSessionPersistence);
           }
@@ -182,27 +189,38 @@ async function run(): Promise<void> {
 
             const stateBeforePass = isStateInRange(result.actualStateBefore, turnDef.expectedStateBefore);
             const stateAfterPass = isStateInRange(result.actualStateAfter, turnDef.expectedState);
+            const expectedBoundaryBand = turnDef.expectedBoundaryBand;
+            const actualBoundaryBand = result.boundaryBand || 'none';
+            const boundaryBandPass = !expectedBoundaryBand || expectedBoundaryBand === actualBoundaryBand;
             const responsePass = isResponseClassMatch(result.actualResponseClass, turnDef.expectedResponseClass);
             const blockedResponsePass = !isBlockedResponse(result.actualResponseClass, turnDef.blockedResponseClass);
             const dependencyLanguage = detectDependencyLanguage(result.actualResponseText);
             const dependencyLanguagePass = !dependencyLanguage.detected;
 
-            const pass = stateBeforePass && stateAfterPass && responsePass && blockedResponsePass && dependencyLanguagePass;
+            const pass = stateBeforePass
+              && stateAfterPass
+              && boundaryBandPass
+              && responsePass
+              && blockedResponsePass
+              && dependencyLanguagePass;
             const failureReason = pass
               ? ''
               : buildFailureReason({
                   stateBeforePass,
                   stateAfterPass,
+                  boundaryBandPass,
                   responsePass,
                   blockedResponsePass,
                   dependencyLanguagePass,
                   dependencyLanguageMatches: dependencyLanguage.matches,
                   expectedStateBefore: expectedStateToString(turnDef.expectedStateBefore),
                   expectedStateAfter: expectedStateToString(turnDef.expectedState),
+                  expectedBoundaryBand: expectedBoundaryBand || '',
                   expectedResponse: expectedResponseToString(turnDef.expectedResponseClass),
                   blockedResponse: blockedResponseToString(turnDef.blockedResponseClass),
                   actualStateBefore: result.actualStateBefore,
                   actualStateAfter: result.actualStateAfter,
+                  actualBoundaryBand,
                   actualResponse: result.actualResponseClass,
                 });
 
@@ -217,8 +235,10 @@ async function run(): Promise<void> {
               loop_index: loopIndex,
               input: variedInput,
               expected_state_range: expectedStateToString(turnDef.expectedState),
+              expected_boundary_band: turnDef.expectedBoundaryBand || '',
               actual_state_before: result.actualStateBefore,
               actual_state_after: result.actualStateAfter,
+              actual_boundary_band: actualBoundaryBand,
               expected_response_class: expectedResponseToString(turnDef.expectedResponseClass),
               blocked_response_class: blockedResponseToString(turnDef.blockedResponseClass),
               actual_response_class: result.actualResponseClass,
@@ -256,8 +276,10 @@ async function run(): Promise<void> {
               loop_index: loopIndex,
               input: variedInput,
               expected_state_range: expectedStateToString(turnDef.expectedState),
+              expected_boundary_band: turnDef.expectedBoundaryBand || '',
               actual_state_before: 'unknown',
               actual_state_after: 'unknown',
+              actual_boundary_band: 'unknown',
               expected_response_class: expectedResponseToString(turnDef.expectedResponseClass),
               blocked_response_class: blockedResponseToString(turnDef.blockedResponseClass),
               actual_response_class: 'normal_reflection',

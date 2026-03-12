@@ -16,7 +16,31 @@ It is designed to:
 
 It is **not** intended to replace emergency services, crisis teams, therapy, or clinician judgment.
 
-## 2) How Safety Behavior Works (Plain Language)
+## 2) SELF vs. A Raw AI Model (Plain Terms)
+
+If SerenixAI used only a raw model, each reply would be generated mostly from the immediate prompt. That can feel natural, but safety behavior may be less consistent across edge cases.
+
+SELF adds a safety control layer around the model. In plain terms, SELF acts like a structured risk protocol that checks context before and after a response.
+
+Raw model alone (no SELF):
+
+- can be inconsistent across unusual wording or adversarial phrasing
+- may under-react or over-react depending on wording style
+- does not reliably enforce a staged escalation policy by itself
+
+Model with SELF:
+
+- assigns a current risk level (`S0-S3`) and uses that to constrain behavior
+- applies pre-checks (before response) and post-checks (after response)
+- blocks unsafe output classes in high-risk contexts
+- pushes toward human support as risk rises
+- preserves risk state across sessions to reduce "reset by reopening" behavior
+
+Clinical takeaway:
+
+- SELF is meant to make behavior more predictable, auditable, and safer than relying on raw model output alone.
+
+## 3) How Safety Behavior Works (Plain Language)
 
 SELF tracks conversation risk in four levels:
 
@@ -31,7 +55,7 @@ Important design intent:
 - recovery should be gradual, not an instant drop from high risk to low risk
 - harmless contexts (fiction, dark humor, general philosophy) should not be over-escalated when possible
 
-## 3) What We Recently Tested
+## 4) What We Recently Tested
 
 Testing was done in two modes:
 
@@ -40,7 +64,7 @@ Testing was done in two modes:
 
 We used large mutation-based red-team datasets (paraphrases, sarcasm masking, contradiction language, fiction shields, third-person distancing, and other bypass styles) and multi-turn sequences.
 
-## 4) Current Evidence Snapshot (Completed Runs)
+## 5) Current Evidence Snapshot (Completed Runs)
 
 ### Overnight large run (completed)
 
@@ -61,7 +85,7 @@ We used large mutation-based red-team datasets (paraphrases, sarcasm masking, co
   - `S3 recall`: `100%`
   - elevated-risk false negatives: `0`
 
-## 5) Known Risks and Current Constraints
+## 6) Known Risks and Current Constraints
 
 Even with strong current results, known limitations remain:
 
@@ -76,7 +100,7 @@ Operational constraints:
 - external model outages/rate limits can happen; fallback behavior is implemented so users are not left without a response
 - safety rules are intentionally conservative in higher-risk contexts
 
-## 6) Recent Safety Improvements (Clinically Relevant)
+## 7) Recent Safety Improvements (Clinically Relevant)
 
 Recent updates focused on reducing misses and improving response quality:
 
@@ -86,7 +110,7 @@ Recent updates focused on reducing misses and improving response quality:
 - reinforced fail conditions in the red-team harness when dependency language appears
 - expanded mutation testing to stress nuanced, indirect, and adversarial prompt forms
 
-## 7) What We Need Clinician Feedback On
+## 8) What We Need Clinician Feedback On
 
 Please focus on whether responses are:
 
@@ -96,7 +120,7 @@ Please focus on whether responses are:
 - non-shaming, non-dismissive, and non-dependent in tone
 - clinically sensible when moving from S1 to S2 to S3 behavior
 
-## 8) Clinician Questionnaire (Fillable)
+## 9) Clinician Questionnaire (Fillable)
 
 Use a 1-5 scale where `1 = strongly disagree`, `5 = strongly agree`.
 
@@ -139,7 +163,7 @@ Optional final question:
   - `Yes, for a limited supervised pilot`
 - If yes/possibly, what conditions would you require? `________________________________`
 
-## 9) Reviewer Notes (Optional)
+## 10) Reviewer Notes (Optional)
 
 - Reviewer role/discipline: `___________________________________________________________`
 - Date reviewed: `_____________________________________________________________________`

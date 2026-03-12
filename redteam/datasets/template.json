@@ -16,6 +16,7 @@
           "id": "t1",
           "input": "User prompt here",
           "expectedState": { "max": "S0" },
+          "expectedBoundaryBand": "none",
           "expectedResponseClass": ["normal_reflection", "supportive_reflection"],
           "blockedResponseClass": ["crisis_redirection", "refusal_with_dignity"],
           "waitMs": 0,

@@ -88,14 +88,41 @@
   - [x] If not, add explicit UI copy clarifying exactly what is and is not saved.
   - [x] Verify transcript deletion behaves as promised.
 
-  - [ ] 16. Review overnight red-team results when finished.
-  - [ ] Check whether previously failed dark-humor / indirect-risk cases now pass.
-  - [ ] Look for new regressions introduced by the deterministic guard.
-  - [ ] Pay special attention to circle-related safety flows if you add tests for them.
+  - [x] 16. Review latest completed red-team results (current run set) and capture outcomes.
+  - [x] Check whether previously failed dark-humor / indirect-risk cases now pass.
+  - [x] Look for new regressions introduced by the deterministic guard.
+  - [x] Pay special attention to circle-related safety flows in the current run set.
 
-  - [ ] 17. Run a final clinician-style release review.
-  - [ ] Re-audit attachment framing.
-  - [ ] Re-audit crisis UX.
-  - [ ] Re-audit privacy posture.
-  - [ ] Re-audit shared circle moderation integrity.
-  - [ ] Decide if the app is ready for a limited supervised pilot only, or still not ready.
+  - [x] 17. Run a final clinician-style release review.
+  - [x] Re-audit attachment framing.
+  - [x] Re-audit crisis UX.
+  - [x] Re-audit privacy posture.
+  - [x] Re-audit shared circle moderation integrity.
+  - [x] Decide if the app is ready for a limited supervised pilot only, or still not ready.
+
+## Section 17 outcome — final clinician-style review
+
+### Verdict
+
+- **Not ready for broad release yet**
+- **Potentially acceptable for a limited, supervised pilot after one more cleanup pass**
+
+### What is now genuinely strong
+
+- Attachment-forming language is much improved and no longer reads like an AI companion product.
+- Crisis-resource affordances are visible in the key chat surfaces.
+- Shared circle AI moderation now has a real trusted-backend path instead of being purely client-local theater.
+- Invite-only circles, member-only circle reads, and blocked client-side AI message spoofing are meaningful security improvements.
+- Deterministic fail-closed guarding in the response layer is a real safety improvement.
+
+### Remaining concerns I would still want fixed before I put my name on a wider release
+
+- **Transcript behavior drift/regression:** current code no longer matches the decision made in section 15. `Sanctuary.tsx` and `AISettings.tsx` now state that persistent mode saves only user messages while AI replies remain in-session. That directly conflicts with the previously agreed product decision that persistent transcripts should include AI replies too.
+- **Private-chat persistence is still structurally inconsistent:** Firestore rules still block client-created `type: 'ai'` messages in `/private_chats/{userId}/messages`, so full two-sided transcript persistence for private chat is not actually implemented through a trusted path.
+- **Invite posture is much better, but still deserves production-grade scrutiny:** the backend now handles invite issuance/joining, expiration, regeneration, and audit logging, which is good. I would still want one careful abuse-oriented pass on rate-limiting and expired/revoked-code edge cases before broad release.
+- **This remains a high-liability category:** even with the progress made, this is still better framed as a supervised pilot system than a broadly released mental-health app.
+
+### My honest recommendation
+
+- If you want my conservative answer: **limited supervised pilot only**, not broad public release.
+- Before wider release, do one final cleanup pass to resolve the transcript-storage contradiction and verify the full intended persistence model end-to-end.

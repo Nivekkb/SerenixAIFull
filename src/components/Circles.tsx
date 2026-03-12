@@ -13,6 +13,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Users, ArrowRight, Sparkles, X, KeyRound } from 'lucide-react';
 import { Circle, OperationType } from '../types';
 import { handleFirestoreError } from '../utils/errorHandlers';
+import SelfPoweredBadge from './SelfPoweredBadge';
 
 interface CirclesProps {
   user: User;
@@ -189,6 +190,7 @@ export default function Circles({ user, onJoinCircle }: CirclesProps) {
         <div>
           <h2 className="font-serif text-3xl font-medium">Private Circles</h2>
           <p className="text-serenix-ink/50">Invite-only group spaces with people you trust.</p>
+          <SelfPoweredBadge className="mt-2" />
         </div>
         <button
           onClick={() => setIsCreating(true)}

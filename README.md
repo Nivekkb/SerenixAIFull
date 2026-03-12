@@ -25,6 +25,11 @@ View your app in AI Studio: https://ai.studio/apps/1982cdba-bf02-4ea1-ac6b-86913
    - Optional split routing:
      - `VITE_SELF_GOVERNANCE_PRE_URL=http://...`
      - `VITE_SELF_GOVERNANCE_POST_URL=http://...`
+   - Optional failover routing (auto-retry when primary pre/post is down):
+     - `VITE_SELF_GOVERNANCE_FALLBACK_URL=http://...` (single fallback for both)
+     - or split fallback:
+       - `VITE_SELF_GOVERNANCE_PRE_FALLBACK_URL=http://...`
+       - `VITE_SELF_GOVERNANCE_POST_FALLBACK_URL=http://...`
    - Optional dedicated circle endpoint base:
      - `VITE_SELF_GOVERNANCE_CIRCLE_URL=http://...`
    - `VITE_SELF_GOVERNANCE_API_KEY=...` only if you set `SELF_LOCAL_API_KEY` for the wrapper
@@ -35,6 +40,31 @@ View your app in AI Studio: https://ai.studio/apps/1982cdba-bf02-4ea1-ac6b-86913
 5. Restart the dev server after changing env vars
 6. Run the app:
    `npm run dev`
+
+## Deploy Frontend + Backend (Firebase + Cloud Run)
+
+`firebase deploy` only deploys Hosting + Firebase config. It does not upload `server/governance-server.ts`.
+
+To deploy the governance backend used by `/v1/pre`, `/v1/post`, and `/v1/circles/*`:
+
+1. Deploy Cloud Run service from this repo folder:
+   `gcloud run deploy serenix-governance --source server/cloudrun --region us-west1 --allow-unauthenticated --project serenixai-f0e1f --set-env-vars SELF_UPSTREAM_BASE_URL=https://governedbyself.com/api,FIREBASE_PROJECT_ID=serenixai-f0e1f`
+2. Deploy Hosting rewrites:
+   `firebase deploy --only hosting`
+3. Point frontend governance URL to your site domain:
+   `VITE_SELF_GOVERNANCE_URL=https://serenixai.com`
+4. (Recommended fail-safe) set pre/post fallback to direct SELF domain:
+   `VITE_SELF_GOVERNANCE_FALLBACK_URL=https://governedbyself.com/api`
+
+Cloud Run service account must be able to read/write Firestore for circle endpoints:
+- Minimum role: `roles/datastore.user` on project `serenixai-f0e1f`
+
+Health check after deploy:
+- `https://serenixai.com/health-governance`
+
+`/v1/pre` and `/v1/post` are hybrid on Cloud Run:
+- primary: proxy to `SELF_UPSTREAM_BASE_URL`
+- fallback: deterministic backend policy/response contract when upstream is unavailable
 
 ## Shared Circle AI Write Model
 
@@ -63,7 +93,18 @@ Run reusable SELF + Serenix red-team automation from CLI:
    `npm run redteam:live-soak`
 6. Generate mutation dataset from semantic blueprint families:
    `npm run redteam:mutate`
+7. Focused persistence + reopen regression profile:
+   `npm run redteam:persistence-regression`
+8. Same persistence profile with live model enabled:
+   `npm run redteam:persistence-regression:live`
 
 Docs and datasets:
 - `redteam/README.md`
 - `redteam/datasets/core.json`
+- `redteam/datasets/regression.persistence.v1.json`
+
+## Transcript Export Guardrail Check
+
+Run a quick automated check to ensure transcript export still includes AI replies and backend provenance metadata:
+
+`npm run test:transcript-export`

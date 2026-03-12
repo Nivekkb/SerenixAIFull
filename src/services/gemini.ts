@@ -15,6 +15,15 @@ const selfGovernancePreBaseUrl = normalizeGovernanceBaseUrl(
 const selfGovernancePostBaseUrl = normalizeGovernanceBaseUrl(
   import.meta.env.VITE_SELF_GOVERNANCE_POST_URL || selfGovernanceBaseUrl,
 );
+const selfGovernanceFallbackBaseUrl = normalizeGovernanceBaseUrl(
+  import.meta.env.VITE_SELF_GOVERNANCE_FALLBACK_URL,
+);
+const selfGovernancePreFallbackBaseUrl = normalizeGovernanceBaseUrl(
+  import.meta.env.VITE_SELF_GOVERNANCE_PRE_FALLBACK_URL || selfGovernanceFallbackBaseUrl,
+);
+const selfGovernancePostFallbackBaseUrl = normalizeGovernanceBaseUrl(
+  import.meta.env.VITE_SELF_GOVERNANCE_POST_FALLBACK_URL || selfGovernanceFallbackBaseUrl,
+);
 const selfGovernanceApiKey = (import.meta.env.VITE_SELF_GOVERNANCE_API_KEY || '').trim();
 const selfGovernanceTimeoutMs = Number.parseInt(String(import.meta.env.VITE_SELF_GOVERNANCE_TIMEOUT_MS || '1200'), 10);
 const hasGeminiApiKey = Boolean(geminiApiKey);
@@ -684,31 +693,87 @@ function getSelfHeaders(): Record<string, string> {
   return headers;
 }
 
+function isRetriableSelfStatus(status: number): boolean {
+  return status >= 500 || status === 429 || status === 408;
+}
+
+function getSelfBaseCandidates(path: '/v1/pre' | '/v1/post'): string[] {
+  const primary = path === '/v1/pre' ? selfGovernancePreBaseUrl : selfGovernancePostBaseUrl;
+  const fallback = path === '/v1/pre' ? selfGovernancePreFallbackBaseUrl : selfGovernancePostFallbackBaseUrl;
+  const candidates = [primary, fallback].filter((value): value is string => Boolean(value));
+  return Array.from(new Set(candidates));
+}
+
 async function fetchSelfJson<T>(path: '/v1/pre' | '/v1/post', body: Record<string, unknown>): Promise<T> {
-  const baseUrl = path === '/v1/pre' ? selfGovernancePreBaseUrl : selfGovernancePostBaseUrl;
-  if (!baseUrl) {
+  const candidates = getSelfBaseCandidates(path);
+  if (candidates.length === 0) {
     throw new Error(`SELF ${path} base URL is not configured.`);
   }
 
-  const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), Number.isFinite(selfGovernanceTimeoutMs) ? selfGovernanceTimeoutMs : 1200);
-  try {
-    const response = await fetch(`${baseUrl}${path}`, {
-      method: 'POST',
-      headers: getSelfHeaders(),
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+  const errors: string[] = [];
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`SELF ${path} failed (${response.status}): ${text}`);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const baseUrl = candidates[index]!;
+    const isFallbackAttempt = index > 0;
+    const isLastAttempt = index >= candidates.length - 1;
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(
+      () => controller.abort(),
+      Number.isFinite(selfGovernanceTimeoutMs) ? selfGovernanceTimeoutMs : 1200,
+    );
+
+    try {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: getSelfHeaders(),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        const message = `SELF ${path} failed via ${baseUrl} (${response.status}): ${text}`;
+        errors.push(message);
+
+        if (!isLastAttempt && isRetriableSelfStatus(response.status)) {
+          console.warn(`SELF ${path} primary endpoint failed with ${response.status}; trying fallback endpoint.`, {
+            failedBaseUrl: baseUrl,
+            fallbackBaseUrl: candidates[index + 1],
+          });
+          continue;
+        }
+
+        throw new Error(message);
+      }
+
+      if (isFallbackAttempt) {
+        console.warn(`SELF ${path} succeeded via fallback endpoint.`, {
+          fallbackBaseUrl: baseUrl,
+          primaryBaseUrl: candidates[0],
+        });
+      }
+
+      return await response.json() as T;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`SELF ${path} request error via ${baseUrl}: ${message}`);
+
+      if (!isLastAttempt) {
+        console.warn(`SELF ${path} request error on primary endpoint; trying fallback endpoint.`, {
+          failedBaseUrl: baseUrl,
+          fallbackBaseUrl: candidates[index + 1],
+          error: message,
+        });
+        continue;
+      }
+
+      throw new Error(errors.join(' | '));
+    } finally {
+      globalThis.clearTimeout(timeout);
     }
-
-    return await response.json() as T;
-  } finally {
-    globalThis.clearTimeout(timeout);
   }
+
+  throw new Error(`SELF ${path} failed across all configured endpoints.`);
 }
 
 async function maybeRunSelfPreflight(args: {
@@ -717,7 +782,7 @@ async function maybeRunSelfPreflight(args: {
   baseSystemPrompt: string;
   userId?: string;
 }): Promise<SelfPreResponse | null> {
-  if (!selfGovernancePreBaseUrl) return null;
+  if (getSelfBaseCandidates('/v1/pre').length === 0) return null;
   return fetchSelfJson<SelfPreResponse>('/v1/pre', {
     message: args.prompt,
     history: normalizeSelfHistory(args.history),
@@ -732,7 +797,7 @@ async function maybeRunSelfPostflight(args: {
   policy: Record<string, unknown>;
   userId?: string;
 }): Promise<SelfPostResponse | null> {
-  if (!selfGovernancePostBaseUrl) return null;
+  if (getSelfBaseCandidates('/v1/post').length === 0) return null;
   return fetchSelfJson<SelfPostResponse>('/v1/post', {
     userMessage: args.userMessage,
     output: args.output,

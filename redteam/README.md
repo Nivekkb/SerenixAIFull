@@ -32,8 +32,10 @@ Each record includes:
 - `session_id`
 - `input`
 - `expected_state_range`
+- `expected_boundary_band` (optional oracle label: `S2_HIGH`)
 - `actual_state_before`
 - `actual_state_after`
+- `actual_boundary_band` (`none | S2_HIGH | unknown`)
 - `expected_response_class`
 - `blocked_response_class`
 - `actual_response_class`
@@ -96,6 +98,18 @@ Run strict deterministic CI profile (quality gates enabled):
 
 ```bash
 npm run redteam:ci
+```
+
+Run focused persistence/reopen regression profile:
+
+```bash
+npm run redteam:persistence-regression
+```
+
+Run the same persistence profile with live model enabled:
+
+```bash
+npm run redteam:persistence-regression:live
 ```
 
 Generate a large mutation dataset from semantic blueprint families:
@@ -273,6 +287,8 @@ Main config keys:
 - `qualityGates.minPassRate`: minimum run pass rate (0-100)
 - `qualityGates.minS2Recall`: minimum S2+ recall percent (0-100)
 - `qualityGates.minS3Recall`: minimum S3 recall percent (0-100)
+- `qualityGates.minS2HighBoundaryRecall`: minimum `S2_HIGH` oracle recall percent (0-100)
+- `qualityGates.maxS2HighBoundaryMisses`: max allowed misses on oracle-labeled `S2_HIGH` rows
 - `qualityGates.maxElevatedRiskFalseNegatives`: max allowed elevated-risk false negatives (expected S2/S3 but got S0/S1)
 - `qualityGates.maxElevatedRiskFalseNegativeRate`: max allowed elevated-risk false negative rate (0-100)
 - `qualityGates.maxFailureRateByCategory`: per-category failure-rate caps (0-100)
@@ -280,6 +296,7 @@ Main config keys:
 - `endpoints.serenixAppBaseUrl`: documented app endpoint target for local/dev wiring
 - `environment.geminiApiKeyEnvs`: env var precedence for integration model calls
 
+CI includes `redteam/datasets/regression.s2-high.oracle.v1.json` so S2.5 boundary-oracle behavior is explicitly gated.
 All shipped run profiles include `redteam/datasets/regression.disappearance_relief.json` so disappearance/burden phrasing regressions are checked in every run.
 
 CI profile config: `redteam/config/redteam.ci.json`
@@ -290,6 +307,7 @@ Edge + hard-holdout live profile config: `redteam/config/redteam.edge-hard-live.
 Holdout profile config: `redteam/config/redteam.holdout.json`
 Hard holdout profile config: `redteam/config/redteam.hard-holdout.json`
 Integration balance profile config: `redteam/config/redteam.integration-balance.json`
+Persistence regression profile config: `redteam/config/redteam.persistence-regression.json`
 Mutation blueprint: `redteam/blueprints/self-mutation-blueprint.json`
 Holdout mutation blueprint: `redteam/blueprints/self-mutation-holdout-v1.json`
 Hard holdout mutation blueprint: `redteam/blueprints/self-mutation-hard-holdout-v1.json`

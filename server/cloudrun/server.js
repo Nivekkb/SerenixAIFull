@@ -4,125 +4,65 @@ import { randomInt } from "node:crypto";
 import { GoogleGenAI } from "@google/genai";
 import { initializeApp as initializeAdminApp, cert, getApps, applicationDefault } from "firebase-admin/app";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
-import { getFirestore as getAdminFirestore, type Firestore } from "firebase-admin/firestore";
-import {
-  detectStateWithSemanticAssist,
-  getEffectivePolicy,
-  adjustPolicyForVariant,
-  applySocialPolicyOverrides,
-  processAngerPhysicalityClarifier,
-  generateClarifierQuestion,
-  applyPolicyToPrompt,
-  applyStateGatedResponseContract,
-  rewriteContinuityQuestions,
-  rewriteSpokenMemoryRecall,
-  maybeAddFollowUpQuestion,
-  validateOutput,
-  repairOutput,
-  getS1Variant,
-  getS2Variant,
-  type Policy,
-  type SelfVariant,
-} from "self-engine";
+import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
 
-type CirclePresenceMode = "quiet" | "facilitation" | "reflection";
-
-type CircleMessageInput = {
-  senderName: string;
-  content: string;
-};
-
-type CircleAnalysis = {
-  hasConflict: boolean;
-  level: 1 | 2 | 3 | 4;
-  type: "disagreement" | "hostility" | "harassment" | "distress" | "none";
-  reason: string;
-  engagementLevel: "low" | "medium" | "high";
-  shouldIntervene: boolean;
-};
-
-type InviteLookupBucket = {
-  windowStartMs: number;
-  attempts: number;
-  blockedUntilMs?: number;
-};
-
-const INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function parsePositiveIntEnv(name: string, fallback: number): number {
+function parsePositiveIntEnv(name, fallback) {
   const raw = Number.parseInt(String(process.env[name] || ""), 10);
   if (!Number.isFinite(raw) || raw <= 0) return fallback;
   return raw;
 }
 
+function normalizeBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+const INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const circleInviteTtlHours = parsePositiveIntEnv("CIRCLE_INVITE_TTL_HOURS", 168);
 const inviteLookupRateWindowSeconds = parsePositiveIntEnv("CIRCLE_INVITE_RATE_LIMIT_WINDOW_SECONDS", 60);
 const inviteLookupRateMaxAttempts = parsePositiveIntEnv("CIRCLE_INVITE_RATE_LIMIT_MAX_ATTEMPTS", 10);
+const selfUpstreamTimeoutMs = parsePositiveIntEnv("SELF_UPSTREAM_TIMEOUT_MS", 2000);
 
-const inviteLookupRateBuckets = new Map<string, InviteLookupBucket>();
-
+const selfUpstreamBaseUrl = normalizeBaseUrl(process.env.SELF_UPSTREAM_BASE_URL || "");
+const selfUpstreamApiKey = String(process.env.SELF_UPSTREAM_API_KEY || "").trim();
+const requiredGovernanceApiKey = String(process.env.GOVERNANCE_API_KEY || process.env.SELF_LOCAL_API_KEY || "").trim();
 const geminiApiKey = String(process.env.GEMINI_API_KEY || "").trim();
 const serverAi = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
-const aiModelName = "gemini-3-flash-preview";
+const aiModelName = "gemini-2.5-flash";
 
-type HistoryMessage = {
-  role: "user" | "assistant" | "system";
-  content: string;
-};
+const inviteLookupRateBuckets = new Map();
 
-function toHistory(value: unknown): HistoryMessage[] {
-  if (!Array.isArray(value)) return [];
-  const out: HistoryMessage[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const role = (item as any).role;
-    const content = (item as any).content;
-    if ((role === "user" || role === "assistant" || role === "system") && typeof content === "string") {
-      out.push({ role, content });
-    }
-  }
-  return out;
-}
-
-function pickVariant(state: Policy["state"], seed?: string, explicitVariant?: string): SelfVariant {
-  if (explicitVariant) return explicitVariant as SelfVariant;
-  if (!seed) return "control";
-  if (state === "S1") return getS1Variant(seed);
-  if (state === "S2") return getS2Variant(seed);
-  return "control";
-}
-
-function extractApiKey(req: express.Request): string {
+function extractApiKey(req) {
   const bearer = String(req.headers.authorization || "");
   if (bearer.toLowerCase().startsWith("bearer ")) return bearer.slice(7).trim();
   return String(req.headers["x-api-key"] || "").trim();
 }
 
-function extractFirebaseToken(req: express.Request): string {
-  return String(req.headers["x-firebase-auth"] || "").trim();
+function extractFirebaseToken(req) {
+  const explicit = String(req.headers["x-firebase-auth"] || "").trim();
+  if (explicit) return explicit;
+  const bearer = String(req.headers.authorization || "");
+  if (bearer.toLowerCase().startsWith("bearer ")) return bearer.slice(7).trim();
+  return "";
 }
 
-function normalizeInviteCode(value: unknown): string {
+function normalizeInviteCode(value) {
   if (typeof value !== "string") return "";
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
 }
 
-function parseTimeMs(value: unknown): number | null {
+function parseTimeMs(value) {
   if (typeof value === "string" && value.trim()) {
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : null;
   }
-
-  if (value && typeof value === "object" && typeof (value as { toDate?: () => Date }).toDate === "function") {
-    const date = (value as { toDate: () => Date }).toDate();
-    const ms = date.getTime();
+  if (value && typeof value === "object" && typeof value.toDate === "function") {
+    const ms = value.toDate().getTime();
     return Number.isFinite(ms) ? ms : null;
   }
-
   return null;
 }
 
-function generateInviteCode(length = 8): string {
+function generateInviteCode(length = 8) {
   let code = "";
   for (let i = 0; i < length; i += 1) {
     code += INVITE_CODE_ALPHABET[randomInt(0, INVITE_CODE_ALPHABET.length)];
@@ -130,7 +70,7 @@ function generateInviteCode(length = 8): string {
   return code;
 }
 
-async function createUniqueInviteCode(adminDb: Firestore): Promise<string> {
+async function createUniqueInviteCode(adminDb) {
   for (let attempt = 0; attempt < 12; attempt += 1) {
     const candidate = generateInviteCode();
     const existing = await adminDb.collection("circle_invites").doc(candidate).get();
@@ -139,14 +79,14 @@ async function createUniqueInviteCode(adminDb: Firestore): Promise<string> {
   return `${generateInviteCode(6)}${Date.now().toString().slice(-2)}`;
 }
 
-function getInviteLookupBucket(uid: string): InviteLookupBucket {
+function getInviteLookupBucket(uid) {
   const key = `invite_lookup:${uid}`;
   const nowMs = Date.now();
   const windowMs = inviteLookupRateWindowSeconds * 1000;
   const existing = inviteLookupRateBuckets.get(key);
 
   if (!existing || nowMs - existing.windowStartMs >= windowMs) {
-    const fresh: InviteLookupBucket = {
+    const fresh = {
       windowStartMs: nowMs,
       attempts: 0,
     };
@@ -157,7 +97,7 @@ function getInviteLookupBucket(uid: string): InviteLookupBucket {
   return existing;
 }
 
-function checkInviteLookupRateLimit(uid: string): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
+function checkInviteLookupRateLimit(uid) {
   const key = `invite_lookup:${uid}`;
   const nowMs = Date.now();
   const windowMs = inviteLookupRateWindowSeconds * 1000;
@@ -179,17 +119,12 @@ function checkInviteLookupRateLimit(uid: string): { allowed: true } | { allowed:
   return { allowed: true };
 }
 
-function clearInviteLookupRateLimit(uid: string): void {
+function clearInviteLookupRateLimit(uid) {
   const key = `invite_lookup:${uid}`;
   inviteLookupRateBuckets.delete(key);
 }
 
-async function issueCircleInvite(
-  adminDb: Firestore,
-  circleId: string,
-  createdBy: string,
-  previousInviteCode?: string,
-): Promise<{ inviteCode: string; createdAt: string; expiresAt: string }> {
+async function issueCircleInvite(adminDb, circleId, createdBy, previousInviteCode) {
   const circleRef = adminDb.collection("circles").doc(circleId);
   const inviteCode = await createUniqueInviteCode(adminDb);
   const nowIso = new Date().toISOString();
@@ -223,18 +158,17 @@ async function issueCircleInvite(
   }, { merge: true });
 
   await batch.commit();
-
   return { inviteCode, createdAt: nowIso, expiresAt };
 }
 
 function getAdminApp() {
-  if (getApps().length > 0) return getApps()[0]!;
+  if (getApps().length > 0) return getApps()[0];
 
   const projectId = String(process.env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT || "").trim() || undefined;
   const clientEmail = String(process.env.FIREBASE_CLIENT_EMAIL || "").trim();
   const privateKeyRaw = String(process.env.FIREBASE_PRIVATE_KEY || "").trim();
 
-  if (clientEmail && privateKeyRaw && projectId) {
+  if (projectId && clientEmail && privateKeyRaw) {
     return initializeAdminApp({
       credential: cert({
         projectId,
@@ -251,7 +185,7 @@ function getAdminApp() {
   });
 }
 
-function getFirebaseAdminConfigMode(): "service_account_env" | "application_default" {
+function getFirebaseAdminConfigMode() {
   const projectId = String(process.env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT || "").trim();
   const clientEmail = String(process.env.FIREBASE_CLIENT_EMAIL || "").trim();
   const privateKeyRaw = String(process.env.FIREBASE_PRIVATE_KEY || "").trim();
@@ -259,7 +193,7 @@ function getFirebaseAdminConfigMode(): "service_account_env" | "application_defa
   return "application_default";
 }
 
-function getFirebaseAdminInitHealth(): { initialized: boolean; mode: "service_account_env" | "application_default"; error?: string } {
+function getFirebaseAdminInitHealth() {
   const mode = getFirebaseAdminConfigMode();
   try {
     getAdminApp();
@@ -273,30 +207,312 @@ function getFirebaseAdminInitHealth(): { initialized: boolean; mode: "service_ac
   }
 }
 
-async function requireVerifiedFirebaseUser(req: express.Request): Promise<{ uid: string }> {
+async function requireVerifiedFirebaseUser(req) {
   const token = extractFirebaseToken(req);
-  if (!token) {
-    throw new Error("firebase_auth_required");
-  }
-
+  if (!token) throw new Error("firebase_auth_required");
   const decoded = await getAdminAuth(getAdminApp()).verifyIdToken(token);
   if (!decoded.uid) throw new Error("firebase_auth_invalid");
   return { uid: decoded.uid };
 }
 
-function fallbackCircleAnalysis(
-  messages: CircleMessageInput[],
-  presenceMode: CirclePresenceMode,
-): CircleAnalysis {
-  const joined = messages.map((m) => m.content.toLowerCase()).join("\n");
+function normalizeSelfText(value) {
+  return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function stateRank(state) {
+  return state === "S3" ? 3 : state === "S2" ? 2 : state === "S1" ? 1 : 0;
+}
+
+function maxState(a, b) {
+  return stateRank(a) >= stateRank(b) ? a : b;
+}
+
+function detectSelfState(message) {
+  const normalized = normalizeSelfText(message);
+  const triggeredRules = [];
+
+  const methodSeekingPatterns = [
+    /\bleast painful way to die\b/,
+    /\bquickest suicide method\b/,
+    /\bhow do people overdose\b/,
+    /\beasiest way to end (?:my|your|their) life\b/,
+    /\b(?:how|what)\b.*\b(?:die|suicide|overdose|kill myself|end my life)\b/,
+    /\bhypothetically\b.*\b(?:die|suicide|overdose|kill|end life)\b/,
+    /\bfor science\b/,
+    /\beducational purposes only\b/,
+    /\bjust curious\b.*\b(?:die|suicide|overdose)\b/,
+  ];
+
+  const explicitIntentPatterns = [
+    /\bi want to kill myself\b/,
+    /\bi(?:'m| am) going to kill myself\b/,
+    /\bi want to end my life\b/,
+    /\bi(?:'m| am) going to end my life\b/,
+    /\bi don't want to live anymore\b/,
+    /\bi dont want to live anymore\b/,
+    /\bi(?:'m| am) going to hurt myself\b/,
+    /\btonight\b.*\b(?:kill myself|end my life|die)\b/,
+  ];
+
+  const passiveDeathWishPatterns = [
+    /\bi wish i wouldn't wake up\b/,
+    /\bi wish i could just disappear\b/,
+    /\bi wish everything would stop\b/,
+    /\bi wish i was gone\b/,
+    /\bnobody would care if i disappeared\b/,
+    /\beveryone would be better off without me\b/,
+    /\bpeople would be happier if i was gone\b/,
+    /\bi feel like everyone'?s life would improve without me\b/,
+    /\bif i disappeared everything would be easier\b/,
+  ];
+
+  const panicPatterns = [
+    /\bi(?:'m| am) having a panic attack\b/,
+    /\bi can(?:not|'?t) breathe\b/,
+    /\bi(?:'m| am) freaking out\b/,
+    /\bmy heart is racing\b/,
+    /\bfeel like i(?:'m| am) suffocating\b/,
+  ];
+
+  const thirdPersonConcernPatterns = [
+    /\bmy friend says they want to die\b/,
+    /\bsomeone i know wants to kill themselves\b/,
+    /\bmy partner says they don'?t want to live anymore\b/,
+    /\bmy buddy says\b.*\b(?:die|kill|end (?:it|life))\b/,
+  ];
+
+  const hopelessPatterns = [
+    /\bnothing matters anymore\b/,
+    /\beverything feels pointless\b/,
+    /\bi don'?t see the point of living\b/,
+    /\blife feels meaningless\b/,
+    /\bi can(?:not|'?t) keep doing this\b/,
+    /\bi(?:'m| am) done with everything\b/,
+    /\bi(?:'m| am) at my limit\b/,
+  ];
+
+  const darkHumorPatterns = [
+    /\balt\s*\+\s*f4\b.*\b(?:existence|myself|me|life)\b/,
+    /\buninstall life\b/,
+    /\blife\.?exe\b.*\b(?:stopped|crashed|quit)\b/,
+    /\bthe void is hiring\b/,
+    /\bdisappear haha\b/,
+  ];
+
+  const isMethodSeeking = methodSeekingPatterns.some((pattern) => pattern.test(normalized));
+  const isExplicitIntent = explicitIntentPatterns.some((pattern) => pattern.test(normalized));
+  const isPassiveDeathWish = passiveDeathWishPatterns.some((pattern) => pattern.test(normalized));
+  const isPanic = panicPatterns.some((pattern) => pattern.test(normalized));
+  const isThirdPersonConcern = thirdPersonConcernPatterns.some((pattern) => pattern.test(normalized));
+  const isHopeless = hopelessPatterns.some((pattern) => pattern.test(normalized));
+  const isDarkHumor = darkHumorPatterns.some((pattern) => pattern.test(normalized));
+
+  if (isMethodSeeking) triggeredRules.push("method_seeking");
+  if (isExplicitIntent) triggeredRules.push("explicit_intent");
+  if (isPassiveDeathWish) triggeredRules.push("passive_death_wish");
+  if (isPanic) triggeredRules.push("panic_signal");
+  if (isThirdPersonConcern) triggeredRules.push("third_person_concern");
+  if (isHopeless) triggeredRules.push("hopelessness");
+  if (isDarkHumor) triggeredRules.push("dark_humor_distress");
+  if (triggeredRules.length === 0) triggeredRules.push("default_reflection");
+
+  let state = "S0";
+  let responseClass = "normal_reflection";
+  if (isMethodSeeking) {
+    state = "S3";
+    responseClass = "refusal_with_dignity";
+  } else if (isExplicitIntent) {
+    state = "S3";
+    responseClass = "crisis_redirection";
+  } else if (isPanic || isThirdPersonConcern || isPassiveDeathWish) {
+    state = "S2";
+    responseClass = isPanic ? "grounding_prompt" : isThirdPersonConcern ? "human_connection_prompt" : "supportive_reflection";
+  } else if (isHopeless || isDarkHumor) {
+    state = "S1";
+    responseClass = "supportive_reflection";
+  }
+
+  return {
+    state,
+    responseClass,
+    triggeredRules,
+    isMethodSeeking,
+  };
+}
+
+function buildDeterministicPolicy(state, responseClass, triggeredRules) {
+  return {
+    state,
+    responseClass,
+    deterministicFallback: true,
+    forbidUnsafeMethodContent: true,
+    requireHumanConnectionNudge: state === "S2" || state === "S3",
+    requireCrisisResources: state === "S3",
+    triggeredRules,
+  };
+}
+
+function buildDeterministicPolicyPrompt(baseSystemPrompt, policy) {
+  if (typeof baseSystemPrompt !== "string" || !baseSystemPrompt.trim()) return undefined;
+  const stateDirective =
+    policy.state === "S3"
+      ? "State S3: refuse harmful instructions with dignity, include crisis redirection, grounding, and immediate human support."
+      : policy.state === "S2"
+        ? "State S2: use supportive reflection with grounding and clear human-connection encouragement."
+        : policy.state === "S1"
+          ? "State S1: use supportive reflection and gentle stabilization."
+          : "State S0: normal reflection.";
+  return `${baseSystemPrompt}\n\nSELF Deterministic Governance Contract (Cloud Run Fallback):\n- ${stateDirective}\n- No unsafe method/instruction content.\n- No dependency language.\n- Preserve user agency and encourage trusted human support when risk is elevated.`;
+}
+
+function rewriteDependencyLanguage(text) {
+  if (!text) return text;
+  let out = String(text);
+  const replacements = [
+    [/\bi(?:\s+am|'m)\s+always\s+here\s+for\s+you\b/gi, "You deserve support from trusted people around you."],
+    [/\bi(?:\s+am|'m)\s+here\s+for\s+you\b/gi, "You deserve support from trusted people around you."],
+    [/\bi(?:\s+am|'m)\s+right\s+here\s+with\s+you\b/gi, "You deserve steady support while you process this."],
+    [/\bi(?:\s+am|'m)\s+here\s+if\s+you\s+need\s+me\b/gi, "You can keep leaning on trusted people when support is needed."],
+    [/\bi\s+care\s+about\s+you\b/gi, "Your wellbeing matters."],
+    [/\byou\s+need\s+me\b/gi, "Support from trusted people can help."],
+    [/\byou\s+don'?t\s+need\s+anyone\s+else\b/gi, "Reaching out to someone you trust can help."],
+  ];
+  for (const [pattern, replacement] of replacements) {
+    out = out.replace(pattern, replacement);
+  }
+  return out.replace(/\s+/g, " ").replace(/\s+([.,!?;:])/g, "$1").trim();
+}
+
+function containsUnsafeMethodContent(text) {
+  const normalized = normalizeSelfText(text);
+  if (!normalized) return false;
+  const highRiskPatterns = [
+    /\b(?:step\s*1|first,\s*|then,\s*|next,\s*)\b.*\b(?:die|suicide|kill yourself|overdose)\b/,
+    /\b(?:least painful|quickest|easiest)\b.*\b(?:way|method)\b.*\b(?:die|suicide|overdose|kill)\b/,
+    /\b(?:how to|ways to)\b.*\b(?:overdose|kill yourself|end your life)\b/,
+  ];
+  return highRiskPatterns.some((pattern) => pattern.test(normalized));
+}
+
+function classifyResponseClass(text) {
+  const normalized = normalizeSelfText(text);
+  if (!normalized) return "normal_reflection";
+  if (/\b(?:i can(?:not|'?t) help with|won'?t provide)\b.*\b(?:method|instructions|hurt yourself|end (?:a )?life|suicide)\b/.test(normalized)) {
+    return "refusal_with_dignity";
+  }
+  if (/\b(?:call|text)\s*988\b|\bemergency services\b|\bimmediate danger\b/.test(normalized)) {
+    return "crisis_redirection";
+  }
+  if (/\b(?:inhale|exhale|hold for|grounding|5-4-3-2-1)\b/.test(normalized)) {
+    return "grounding_prompt";
+  }
+  if (/\b(?:reach out|trusted person|someone you trust)\b/.test(normalized)) {
+    return "human_connection_prompt";
+  }
+  if (/\b(?:that sounds|i hear|this feels)\b/.test(normalized)) {
+    return "supportive_reflection";
+  }
+  return "normal_reflection";
+}
+
+function buildStateFallbackResponse(state, userMessage, isMethodSeeking) {
+  if (state === "S3") {
+    if (isMethodSeeking) {
+      return "I can't help with instructions for harming yourself or ending a life. If this connects to how you're feeling right now, your safety matters right now. If you might act on these thoughts, call or text 988 (US/Canada) or contact local emergency services now, and reach out to a trusted person immediately.";
+    }
+    return "Thank you for sharing this directly. You don't have to carry this alone right now. If there's any immediate danger, call or text 988 (US/Canada) or contact local emergency services now. If you can, reach out to one trusted person and tell them you need support right now.";
+  }
+  if (state === "S2") {
+    return "That sounds really heavy. Let's slow it down for one moment: take one slow breath in and out, then name one person you can contact for support right now. You deserve real human support as you move through this.";
+  }
+  if (state === "S1") {
+    return "That sounds like a lot to hold. What part feels heaviest right now, and what would help you feel a little steadier in this moment?";
+  }
+  return userMessage
+    ? "Thank you for sharing that. What part would you like to unpack first?"
+    : "What would you like to reflect on first?";
+}
+
+function buildDeterministicPreflight(body, upstreamMeta) {
+  const message = typeof body?.message === "string" ? body.message : "";
+  const detection = detectSelfState(message);
+  const policy = buildDeterministicPolicy(detection.state, detection.responseClass, detection.triggeredRules);
+  return {
+    detection: {
+      state: detection.state,
+      responseClass: detection.responseClass,
+      triggeredRules: detection.triggeredRules,
+      deterministicFallback: true,
+    },
+    variant: "control",
+    policy,
+    meta: {
+      source: "cloudrun_deterministic_pre_fallback",
+      upstream: upstreamMeta,
+      triggeredRules: detection.triggeredRules,
+    },
+    clarifier: {
+      required: false,
+    },
+    policyPrompt: buildDeterministicPolicyPrompt(body?.baseSystemPrompt, policy),
+  };
+}
+
+function buildDeterministicPostflight(body, upstreamMeta) {
+  const userMessage = typeof body?.userMessage === "string" ? body.userMessage : "";
+  const rawOutput = typeof body?.output === "string" ? body.output : "";
+  const policyState = typeof body?.policy?.state === "string" ? body.policy.state : "S0";
+  const userDetection = detectSelfState(userMessage);
+  const effectiveState = maxState(policyState, userDetection.state);
+  const issues = [];
+
+  let output = rawOutput.trim() || buildStateFallbackResponse(effectiveState, userMessage, userDetection.isMethodSeeking);
+  output = rewriteDependencyLanguage(output);
+
+  if (containsUnsafeMethodContent(output)) {
+    issues.push("unsafe_method_content_detected");
+    output = buildStateFallbackResponse("S3", userMessage, true);
+  }
+
+  let responseClass = classifyResponseClass(output);
+  const s2Weak = effectiveState === "S2" && responseClass === "normal_reflection";
+  const s3Weak =
+    effectiveState === "S3"
+    && !["refusal_with_dignity", "crisis_redirection", "grounding_prompt", "human_connection_prompt"].includes(responseClass);
+
+  if (s2Weak || s3Weak) {
+    issues.push(s3Weak ? "s3_guard_fail_closed" : "s2_guard_fail_closed");
+    output = buildStateFallbackResponse(effectiveState, userMessage, userDetection.isMethodSeeking);
+    output = rewriteDependencyLanguage(output);
+    responseClass = classifyResponseClass(output);
+  }
+
+  return {
+    output,
+    validation: {
+      ok: true,
+      state: effectiveState,
+      responseClass,
+      issues,
+      deterministicFallback: true,
+      source: "cloudrun_deterministic_post_fallback",
+      upstream: upstreamMeta,
+    },
+    repaired: issues.length > 0,
+  };
+}
+
+function fallbackCircleAnalysis(messages, presenceMode) {
+  const joined = messages.map((m) => String(m.content || "").toLowerCase()).join("\n");
   const uniqueSenders = new Set(messages.map((m) => m.senderName)).size;
   const hasHostility = /\b(?:stupid|idiot|shut up|hate you|this is your fault|you always|you never)\b/.test(joined);
   const hasDistress = /\b(?:can't do this|panic|overwhelmed|want to die|hurt myself|hopeless|kill myself|end my life)\b/.test(joined);
   const hasConflict = hasHostility || hasDistress;
-  const level: 1 | 2 | 3 | 4 = hasDistress ? 3 : hasHostility ? 2 : 1;
-  const type: CircleAnalysis["type"] = hasDistress ? "distress" : hasHostility ? "hostility" : "none";
-  const engagementLevel: CircleAnalysis["engagementLevel"] =
+  const level = hasDistress ? 3 : hasHostility ? 2 : 1;
+  const type = hasDistress ? "distress" : hasHostility ? "hostility" : "none";
+  const engagementLevel =
     messages.length >= 6 && uniqueSenders >= 2 ? "high" : messages.length >= 3 ? "medium" : "low";
+
   const shouldIntervene =
     presenceMode === "quiet"
       ? hasConflict
@@ -316,7 +532,7 @@ function fallbackCircleAnalysis(
   };
 }
 
-function fallbackCircleMediation(analysis: CircleAnalysis, presenceMode: CirclePresenceMode): string {
+function fallbackCircleMediation(analysis, presenceMode) {
   if (presenceMode === "quiet" && !analysis.hasConflict) {
     return "The AI will stay in the background unless support is needed.";
   }
@@ -332,32 +548,108 @@ function fallbackCircleMediation(analysis: CircleAnalysis, presenceMode: CircleP
   return "If it helps, each person can share one small win and one current challenge for today.";
 }
 
-function fallbackCircleActivity(type: "starter" | "gratitude" | "story" | "checkin"): string {
+function fallbackCircleActivity(type) {
   const prompts = {
     starter: "Starter: What is one thing on your mind today that you want support with?",
     gratitude: "Gratitude: Share one small thing you are grateful for from the last 24 hours.",
     story: "Story: Start with 'Today the group found a quiet room where everyone could be honest...' and add one sentence each.",
     checkin: "Check-in: Share a 1-10 energy score and one word for your mood.",
-  } as const;
-  return prompts[type];
+  };
+  return prompts[type] || prompts.starter;
 }
 
-function normalizePrivatePrompt(prompt: string): string {
-  return prompt.toLowerCase().replace(/\s+/g, " ").trim();
+async function analyzeCircleConversationServer(messages, presenceMode) {
+  if (!serverAi) return fallbackCircleAnalysis(messages, presenceMode);
+
+  const prompt = `Analyze the following private support-circle conversation.\n\nAI Presence Mode: ${presenceMode}\n- quiet: intervene only for meaningful conflict/distress.\n- facilitation: intervene for conflict or stalled/low engagement.\n- reflection: intervene more actively when engagement is not high.\n\nConversation:\n${messages.map((m) => `${m.senderName}: ${m.content}`).join("\n")}\n\nReturn JSON with keys: hasConflict, level, type, reason, engagementLevel, shouldIntervene.`;
+
+  try {
+    const response = await serverAi.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        systemInstruction: "You are a cautious group dynamics analyst for a mental-health-adjacent support app. Prefer safe escalation when distress is plausibly present.",
+      },
+    });
+
+    const parsed = JSON.parse(response.text || "{}");
+    return {
+      hasConflict: Boolean(parsed.hasConflict),
+      level: [1, 2, 3, 4].includes(parsed.level) ? parsed.level : 1,
+      type: ["disagreement", "hostility", "harassment", "distress", "none"].includes(parsed.type) ? parsed.type : "none",
+      reason: typeof parsed.reason === "string" ? parsed.reason : "",
+      engagementLevel: ["low", "medium", "high"].includes(parsed.engagementLevel) ? parsed.engagementLevel : "medium",
+      shouldIntervene: Boolean(parsed.shouldIntervene),
+    };
+  } catch {
+    return fallbackCircleAnalysis(messages, presenceMode);
+  }
 }
 
-function classifyPrivateRisk(prompt: string): { state: "S0" | "S1" | "S2" | "S3"; methodSeeking: boolean } {
+async function buildCircleMediationServer(messages, analysis, presenceMode) {
+  if (!serverAi) return fallbackCircleMediation(analysis, presenceMode);
+
+  const prompt = `As SerenixAI, provide a concise shared facilitation note for this private circle.\n\nPresence Mode: ${presenceMode}\nConflict Level: ${analysis.level} (${analysis.type})\nReason: ${analysis.reason}\nEngagement: ${analysis.engagementLevel}\n\nRules:\n- Do not take sides.\n- Do not shame or police.\n- Do not imply therapy or exclusive attachment.\n- Encourage grounded, human-to-human communication.\n- If level 4, clearly pause the thread for safety and direct members toward immediate human support.\n\nConversation:\n${messages.map((m) => `${m.senderName}: ${m.content}`).join("\n")}`;
+
+  try {
+    const response = await serverAi.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        systemInstruction: "You are a cautious, non-attaching facilitator for private support circles.",
+      },
+    });
+    return (response.text || fallbackCircleMediation(analysis, presenceMode)).trim();
+  } catch {
+    return fallbackCircleMediation(analysis, presenceMode);
+  }
+}
+
+async function buildCircleActivityServer(type, messages) {
+  if (!serverAi) return fallbackCircleActivity(type);
+
+  const prompt = `${messages.length > 0 ? `Recent mood: ${messages.map((m) => m.content).join(" ")}` : "The group just started."}\n\nGenerate one brief ${type} prompt for a private support circle.`;
+  try {
+    const response = await serverAi.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        systemInstruction: "You are a concise, non-attaching facilitator for private support circles. Keep prompts brief and safe.",
+      },
+    });
+    return (response.text || fallbackCircleActivity(type)).trim();
+  } catch {
+    return fallbackCircleActivity(type);
+  }
+}
+
+function buildAiWriteProvenance(route, timestamp) {
+  return {
+    writtenBy: "trusted_backend",
+    writerService: "serenix-governance-cloudrun",
+    writerRoute: route,
+    writerMode: serverAi ? "model_with_deterministic_fallback" : "deterministic_fallback_only",
+    writerModel: serverAi ? "gemini-2.5-flash" : null,
+    writerGeneratedAt: timestamp,
+  };
+}
+
+function normalizePrivatePrompt(prompt) {
+  return String(prompt || "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function classifyPrivateRisk(prompt) {
   const normalized = normalizePrivatePrompt(prompt);
   const methodSeeking = /\b(?:least painful way to die|quickest suicide method|how do people overdose|how to kill myself|end my life painlessly)\b/.test(normalized);
   const explicitIntent = /\b(?:i want to kill myself|i want to end my life|i'm going to kill myself|i do not want to live anymore|i dont want to live anymore)\b/.test(normalized);
   const elevated = /\b(?:i wish i could disappear|i wish everything would stop|everything feels pointless|life feels meaningless|i can't keep doing this|panic attack|i can't breathe|i cant breathe|freaking out)\b/.test(normalized);
-
   if (methodSeeking || explicitIntent) return { state: "S3", methodSeeking };
   if (elevated) return { state: "S2", methodSeeking: false };
   return { state: "S0", methodSeeking: false };
 }
 
-function buildPrivateFallbackOutput(userMessage: string): string {
+function buildPrivateFallbackOutput(userMessage) {
   const risk = classifyPrivateRisk(userMessage);
   if (risk.state === "S3") {
     if (risk.methodSeeking) {
@@ -371,7 +663,7 @@ function buildPrivateFallbackOutput(userMessage: string): string {
   return "Thank you for sharing that. What part feels most important to unpack first?";
 }
 
-function buildPrivateSystemPrompt(responseLength?: string, preferredName?: string): string {
+function buildPrivateSystemPrompt(responseLength, preferredName) {
   const lengthInstruction = responseLength === "long"
     ? "Long mode is enabled. You may provide fuller detail when useful, while still staying concise."
     : responseLength === "medium"
@@ -387,88 +679,93 @@ Do not use dependency-forming language.
 Encourage real-world support when risk is elevated.`;
 }
 
-function enforcePrivateFailClosed(output: string, userMessage: string): string {
+function enforcePrivateFailClosed(output, userMessage) {
   const risk = classifyPrivateRisk(userMessage);
   const normalized = normalizePrivatePrompt(output);
   const hasUnsafeMethodContent = /\b(?:step\s*1|least painful|quickest|how to|ways to)\b.*\b(?:die|suicide|overdose|kill yourself|end your life)\b/.test(normalized);
   const lacksCrisisForS3 = risk.state === "S3" && !/\b(?:988|emergency services|trusted person|can't help with instructions|cannot help with instructions)\b/.test(normalized);
-
   if (hasUnsafeMethodContent || lacksCrisisForS3) {
     return buildPrivateFallbackOutput(userMessage);
   }
-
   return output;
 }
 
-async function analyzeCircleConversationServer(messages: CircleMessageInput[], presenceMode: CirclePresenceMode): Promise<CircleAnalysis> {
-  if (!serverAi) return fallbackCircleAnalysis(messages, presenceMode);
-  const prompt = `Analyze the following private support-circle conversation.\n\nAI Presence Mode: ${presenceMode}\n- quiet: intervene only for meaningful conflict/distress.\n- facilitation: intervene for conflict or stalled/low engagement.\n- reflection: intervene more actively when engagement is not high.\n\nConversation:\n${messages.map((m) => `${m.senderName}: ${m.content}`).join("\n")}\n\nReturn JSON with keys: hasConflict, level, type, reason, engagementLevel, shouldIntervene.`;
-  try {
-    const response = await serverAi.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        systemInstruction: "You are a cautious group dynamics analyst for a mental-health-adjacent support app. Prefer safe escalation when distress is plausibly present.",
-      },
-    });
-    const parsed = JSON.parse(response.text || "{}");
+function buildUpstreamHeaders(req) {
+  const headers = {
+    "content-type": "application/json",
+  };
+
+  if (selfUpstreamApiKey) {
+    headers.authorization = `Bearer ${selfUpstreamApiKey}`;
+    headers["x-api-key"] = selfUpstreamApiKey;
+  } else {
+    const authorization = String(req.headers.authorization || "").trim();
+    const xApiKey = String(req.headers["x-api-key"] || "").trim();
+    if (authorization) headers.authorization = authorization;
+    if (xApiKey) headers["x-api-key"] = xApiKey;
+  }
+
+  return headers;
+}
+
+async function callSelfUpstream(req, path) {
+  if (!selfUpstreamBaseUrl) {
     return {
-      hasConflict: Boolean(parsed.hasConflict),
-      level: ([1, 2, 3, 4].includes(parsed.level) ? parsed.level : 1) as 1 | 2 | 3 | 4,
-      type: (["disagreement", "hostility", "harassment", "distress", "none"].includes(parsed.type) ? parsed.type : "none") as CircleAnalysis["type"],
-      reason: typeof parsed.reason === "string" ? parsed.reason : "",
-      engagementLevel: (["low", "medium", "high"].includes(parsed.engagementLevel) ? parsed.engagementLevel : "medium") as CircleAnalysis["engagementLevel"],
-      shouldIntervene: Boolean(parsed.shouldIntervene),
+      ok: false,
+      status: 503,
+      error: "self_upstream_not_configured",
+      detail: "Set SELF_UPSTREAM_BASE_URL so /v1/pre and /v1/post can be proxied.",
     };
-  } catch {
-    return fallbackCircleAnalysis(messages, presenceMode);
   }
-}
 
-async function buildCircleMediationServer(messages: CircleMessageInput[], analysis: CircleAnalysis, presenceMode: CirclePresenceMode): Promise<string> {
-  if (!serverAi) return fallbackCircleMediation(analysis, presenceMode);
-  const prompt = `As SerenixAI, provide a concise shared facilitation note for this private circle.\n\nPresence Mode: ${presenceMode}\nConflict Level: ${analysis.level} (${analysis.type})\nReason: ${analysis.reason}\nEngagement: ${analysis.engagementLevel}\n\nRules:\n- Do not take sides.\n- Do not shame or police.\n- Do not imply therapy or exclusive attachment.\n- Encourage grounded, human-to-human communication.\n- If level 4, clearly pause the thread for safety and direct members toward immediate human support.\n\nConversation:\n${messages.map((m) => `${m.senderName}: ${m.content}`).join("\n")}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), selfUpstreamTimeoutMs);
   try {
-    const response = await serverAi.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        systemInstruction: "You are a cautious, non-attaching facilitator for private support circles.",
-      },
+    const upstreamResponse = await fetch(`${selfUpstreamBaseUrl}${path}`, {
+      method: "POST",
+      headers: buildUpstreamHeaders(req),
+      body: JSON.stringify(req.body || {}),
+      signal: controller.signal,
     });
-    return (response.text || fallbackCircleMediation(analysis, presenceMode)).trim();
-  } catch {
-    return fallbackCircleMediation(analysis, presenceMode);
-  }
-}
 
-async function buildCircleActivityServer(type: "starter" | "gratitude" | "story" | "checkin", messages: CircleMessageInput[]): Promise<string> {
-  if (!serverAi) return fallbackCircleActivity(type);
-  const prompt = `${messages.length > 0 ? `Recent mood: ${messages.map((m) => m.content).join(" ")}` : "The group just started."}\n\nGenerate one brief ${type} prompt for a private support circle.`;
-  try {
-    const response = await serverAi.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        systemInstruction: "You are a concise, non-attaching facilitator for private support circles. Keep prompts brief and safe.",
-      },
-    });
-    return (response.text || fallbackCircleActivity(type)).trim();
-  } catch {
-    return fallbackCircleActivity(type);
-  }
-}
+    const status = upstreamResponse.status;
+    const contentType = String(upstreamResponse.headers.get("content-type") || "");
+    const text = await upstreamResponse.text();
+    const isJson = contentType.includes("application/json");
+    let parsedJson = null;
+    if (isJson) {
+      try {
+        parsedJson = JSON.parse(text);
+      } catch {
+        parsedJson = null;
+      }
+    }
 
-function buildAiWriteProvenance(route: "/v1/circles/intervene" | "/v1/circles/activity", timestamp: string) {
-  return {
-    writtenBy: "trusted_backend",
-    writerService: "governance-server",
-    writerRoute: route,
-    writerMode: serverAi ? "model_with_deterministic_fallback" : "deterministic_fallback_only",
-    writerModel: serverAi ? "gemini-3-flash-preview" : null,
-    writerGeneratedAt: timestamp,
-  } as const;
+    if (upstreamResponse.ok) {
+      return {
+        ok: true,
+        status,
+        contentType,
+        body: isJson && parsedJson !== null ? parsedJson : text,
+      };
+    }
+
+    return {
+      ok: false,
+      status,
+      error: "self_upstream_http_error",
+      detail: text || `Upstream returned HTTP ${status}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      error: "self_upstream_proxy_failed",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const app = express();
@@ -486,24 +783,43 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  const requiredApiKey = String(process.env.SELF_LOCAL_API_KEY || "").trim();
-  if (!requiredApiKey) {
+  if (!requiredGovernanceApiKey) {
     next();
     return;
   }
+
   const provided = extractApiKey(req);
-  if (!provided || provided !== requiredApiKey) {
+  if (!provided || provided !== requiredGovernanceApiKey) {
     res.status(401).json({ error: "invalid_api_key" });
     return;
   }
+
   next();
 });
 
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    mode: "local-package",
-    engine: "self-engine",
+    mode: "cloudrun-hybrid",
+    upstreamConfigured: Boolean(selfUpstreamBaseUrl),
+    upstreamBaseUrl: selfUpstreamBaseUrl || null,
+    deterministicPrePostFallback: true,
+    firebaseAdmin: getFirebaseAdminInitHealth(),
+    inviteConfig: {
+      ttlHours: circleInviteTtlHours,
+      lookupRateWindowSeconds: inviteLookupRateWindowSeconds,
+      lookupRateMaxAttempts: inviteLookupRateMaxAttempts,
+    },
+  });
+});
+
+app.get("/health-governance", (_req, res) => {
+  res.json({
+    ok: true,
+    mode: "cloudrun-hybrid",
+    upstreamConfigured: Boolean(selfUpstreamBaseUrl),
+    upstreamBaseUrl: selfUpstreamBaseUrl || null,
+    deterministicPrePostFallback: true,
     firebaseAdmin: getFirebaseAdminInitHealth(),
     inviteConfig: {
       ttlHours: circleInviteTtlHours,
@@ -514,99 +830,66 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/v1/pre", async (req, res) => {
-  try {
-    const body = req.body || {};
-    const message = body.message;
-    if (typeof message !== "string" || !message.trim()) {
-      res.status(400).json({ error: "message_required" });
-      return;
-    }
-
-    const history = toHistory(body.history);
-    const semanticAssistEnabledRaw = body.semanticAssistEnabled;
-    const semanticAssistEnabled =
-      typeof semanticAssistEnabledRaw === "boolean"
-        ? semanticAssistEnabledRaw
-        : undefined;
-    const semanticAssistMode =
-      body.semanticAssistMode === "observe" || body.semanticAssistMode === "assist"
-        ? body.semanticAssistMode
-        : undefined;
-    const detection = await detectStateWithSemanticAssist(message, history, {
-      enabled: semanticAssistEnabled,
-      mode: semanticAssistMode,
-    });
-
-    const seed =
-      typeof body.seed === "string"
-        ? body.seed
-        : typeof body.sessionId === "string" || typeof body.userId === "string"
-          ? `${String(body.userId || "")}:${String(body.sessionId || "")}`.trim()
-          : undefined;
-
-    const variant = pickVariant(detection.state, seed, typeof body.variant === "string" ? body.variant : undefined);
-
-    let policy = adjustPolicyForVariant(getEffectivePolicy({ state: detection.state }), variant);
-    const { policy: overriddenPolicy, meta } = applySocialPolicyOverrides({
-      message,
-      detection,
-      policy,
-      history,
-    });
-    policy = overriddenPolicy;
-
-    const clarifier = processAngerPhysicalityClarifier(message, detection);
-    const clarifierQuestion = clarifier.required ? generateClarifierQuestion() : undefined;
-    const baseSystemPrompt = typeof body.baseSystemPrompt === "string" ? body.baseSystemPrompt : undefined;
-    const policyPrompt = baseSystemPrompt ? applyPolicyToPrompt(policy, baseSystemPrompt, variant) : undefined;
-
-    res.json({
-      detection,
-      variant,
-      policy,
-      meta,
-      clarifier: {
-        ...clarifier,
-        question: clarifierQuestion,
-      },
-      policyPrompt,
-    });
-  } catch (error) {
-    res.status(500).json({ error: "preflight_failed", detail: error instanceof Error ? error.message : String(error) });
+  const body = req.body || {};
+  const message = body.message;
+  if (typeof message !== "string" || !message.trim()) {
+    res.status(400).json({ error: "message_required" });
+    return;
   }
+
+  const upstream = await callSelfUpstream(req, "/v1/pre");
+  if (upstream.ok) {
+    res.status(upstream.status);
+    if (typeof upstream.body === "string") {
+      res.send(upstream.body);
+    } else {
+      res.json(upstream.body);
+    }
+    return;
+  }
+
+  console.warn("[serenix-governance-cloudrun] /v1/pre upstream unavailable, using deterministic fallback.", {
+    error: upstream.error,
+    status: upstream.status,
+  });
+  res.status(200).json(
+    buildDeterministicPreflight(body, {
+      error: upstream.error,
+      status: upstream.status,
+      detail: upstream.detail,
+    }),
+  );
 });
 
-app.post("/v1/post", (req, res) => {
-  try {
-    const body = req.body || {};
-    const output = body.output;
-    const userMessage = body.userMessage;
-    const policy = body.policy as Policy | undefined;
-
-    if (typeof output !== "string" || typeof userMessage !== "string" || !policy || typeof policy !== "object") {
-      res.status(400).json({ error: "output_userMessage_policy_required" });
-      return;
-    }
-
-    const stage1 = applyStateGatedResponseContract(output, policy, userMessage);
-    const stage2 = rewriteContinuityQuestions(stage1, policy, userMessage);
-    const stage3 = rewriteSpokenMemoryRecall(stage2, policy, userMessage);
-    const stage4 = maybeAddFollowUpQuestion(stage3, policy, userMessage);
-
-    let finalOutput = stage4;
-    let validation = validateOutput(finalOutput, policy);
-    let repaired = false;
-
-    if (!validation.ok) {
-      finalOutput = repairOutput(finalOutput, policy);
-      repaired = true;
-      validation = validateOutput(finalOutput, policy);
-    }
-
-    res.json({ output: finalOutput, validation, repaired });
-  } catch (error) {
-    res.status(500).json({ error: "postflight_failed", detail: error instanceof Error ? error.message : String(error) });
+app.post("/v1/post", async (req, res) => {
+  const body = req.body || {};
+  if (typeof body.output !== "string" || typeof body.userMessage !== "string" || !body.policy || typeof body.policy !== "object") {
+    res.status(400).json({ error: "output_userMessage_policy_required" });
+    return;
   }
+
+  const upstream = await callSelfUpstream(req, "/v1/post");
+  if (upstream.ok) {
+    res.status(upstream.status);
+    if (typeof upstream.body === "string") {
+      res.send(upstream.body);
+    } else {
+      res.json(upstream.body);
+    }
+    return;
+  }
+
+  console.warn("[serenix-governance-cloudrun] /v1/post upstream unavailable, using deterministic fallback.", {
+    error: upstream.error,
+    status: upstream.status,
+  });
+  res.status(200).json(
+    buildDeterministicPostflight(body, {
+      error: upstream.error,
+      status: upstream.status,
+      detail: upstream.detail,
+    }),
+  );
 });
 
 app.post("/v1/private/respond", async (req, res) => {
@@ -630,7 +913,6 @@ app.post("/v1/private/respond", async (req, res) => {
           ...history,
           { role: "user", parts: [{ text: userMessage }] },
         ];
-
         const response = await serverAi.models.generateContent({
           model: aiModelName,
           contents,
@@ -654,7 +936,7 @@ app.post("/v1/private/respond", async (req, res) => {
       timestamp,
       type: "ai",
       writtenBy: "trusted_backend",
-      writerService: "governance-server",
+      writerService: "serenix-governance-cloudrun",
       writerRoute: "/v1/private/respond",
       writerMode: serverAi ? "model_with_deterministic_fallback" : "deterministic_fallback_only",
       writerModel: serverAi ? aiModelName : null,
@@ -685,7 +967,7 @@ app.post("/v1/circles/invite/create", async (req, res) => {
       return;
     }
 
-    const circleData = circleSnap.data() as { createdBy?: string; inviteCode?: string };
+    const circleData = circleSnap.data() || {};
     if (circleData.createdBy !== uid) {
       res.status(403).json({ error: "only_creator_can_create_invite" });
       return;
@@ -695,7 +977,7 @@ app.post("/v1/circles/invite/create", async (req, res) => {
     if (existingCode) {
       const existingInviteSnap = await adminDb.collection("circle_invites").doc(existingCode).get();
       if (existingInviteSnap.exists) {
-        const existingInvite = existingInviteSnap.data() as { expiresAt?: unknown; revokedAt?: unknown; createdAt?: unknown };
+        const existingInvite = existingInviteSnap.data() || {};
         const nowMs = Date.now();
         const expiresAtMs = parseTimeMs(existingInvite.expiresAt);
         const revokedAtMs = parseTimeMs(existingInvite.revokedAt);
@@ -741,7 +1023,7 @@ app.post("/v1/circles/invite/regenerate", async (req, res) => {
       return;
     }
 
-    const circleData = circleSnap.data() as { createdBy?: string; inviteCode?: string };
+    const circleData = circleSnap.data() || {};
     if (circleData.createdBy !== uid) {
       res.status(403).json({ error: "only_creator_can_regenerate_invite" });
       return;
@@ -765,10 +1047,9 @@ app.post("/v1/circles/invite/join", async (req, res) => {
     const { uid } = await requireVerifiedFirebaseUser(req);
     const limiter = checkInviteLookupRateLimit(uid);
     if (!limiter.allowed) {
-      const retryAfterSeconds = "retryAfterSeconds" in limiter ? limiter.retryAfterSeconds : inviteLookupRateWindowSeconds;
       res.status(429).json({
         error: "invite_lookup_rate_limited",
-        retryAfterSeconds,
+        retryAfterSeconds: limiter.retryAfterSeconds || inviteLookupRateWindowSeconds,
       });
       return;
     }
@@ -786,42 +1067,37 @@ app.post("/v1/circles/invite/join", async (req, res) => {
     const joinResult = await adminDb.runTransaction(async (transaction) => {
       const inviteRef = adminDb.collection("circle_invites").doc(inviteCode);
       const inviteSnap = await transaction.get(inviteRef);
-      if (!inviteSnap.exists) return { ok: false as const, error: "invite_invalid_or_expired" };
+      if (!inviteSnap.exists) return { ok: false, error: "invite_invalid_or_expired" };
 
-      const inviteData = inviteSnap.data() as {
-        circleId?: string;
-        expiresAt?: unknown;
-        revokedAt?: unknown;
-        uses?: number;
-        usedBy?: string[];
-      };
+      const inviteData = inviteSnap.data() || {};
       const circleId = typeof inviteData.circleId === "string" ? inviteData.circleId : "";
-      if (!circleId) return { ok: false as const, error: "invite_invalid_or_expired" };
+      if (!circleId) return { ok: false, error: "invite_invalid_or_expired" };
 
       const revokedAtMs = parseTimeMs(inviteData.revokedAt);
-      if (revokedAtMs) return { ok: false as const, error: "invite_invalid_or_expired" };
+      if (revokedAtMs) return { ok: false, error: "invite_invalid_or_expired" };
 
       const expiresAtMs = parseTimeMs(inviteData.expiresAt);
       if (expiresAtMs && Date.now() > expiresAtMs) {
         transaction.set(inviteRef, { revokedAt: nowIso, revokedBy: "system_expired" }, { merge: true });
-        return { ok: false as const, error: "invite_invalid_or_expired" };
+        return { ok: false, error: "invite_invalid_or_expired" };
       }
 
       const circleRef = adminDb.collection("circles").doc(circleId);
       const circleSnap = await transaction.get(circleRef);
-      if (!circleSnap.exists) return { ok: false as const, error: "invite_invalid_or_expired" };
+      if (!circleSnap.exists) return { ok: false, error: "invite_invalid_or_expired" };
 
-      const circleData = circleSnap.data() as { members?: string[] };
+      const circleData = circleSnap.data() || {};
       const existingMembers = Array.isArray(circleData.members)
-        ? circleData.members.filter((member): member is string => typeof member === "string")
+        ? circleData.members.filter((member) => typeof member === "string")
         : [];
+
       const alreadyMember = existingMembers.includes(uid);
       if (!alreadyMember) {
         transaction.set(circleRef, { members: [...existingMembers, uid] }, { merge: true });
       }
 
       const usedBy = Array.isArray(inviteData.usedBy)
-        ? inviteData.usedBy.filter((member): member is string => typeof member === "string")
+        ? inviteData.usedBy.filter((member) => typeof member === "string")
         : [];
       const nextUsedBy = usedBy.includes(uid) ? usedBy : [...usedBy, uid];
       const currentUses = Number.isFinite(inviteData.uses) ? Number(inviteData.uses) : 0;
@@ -833,12 +1109,7 @@ app.post("/v1/circles/invite/join", async (req, res) => {
         uses: nextUses,
       }, { merge: true });
 
-      return {
-        ok: true as const,
-        circleId,
-        alreadyMember,
-        uses: nextUses,
-      };
+      return { ok: true, circleId, alreadyMember, uses: nextUses };
     });
 
     if (!joinResult.ok) {
@@ -858,7 +1129,7 @@ app.post("/v1/circles/invite/join", async (req, res) => {
         uses: joinResult.uses,
       });
     } catch {
-      // no-op: audit logging should never block successful joins
+      // audit should not block success
     }
 
     res.json({
@@ -881,7 +1152,7 @@ app.post("/v1/circles/intervene", async (req, res) => {
     const recentMessages = Array.isArray(body.recentMessages)
       ? body.recentMessages
           .filter((m) => m && typeof m === "object" && typeof m.senderName === "string" && typeof m.content === "string")
-          .map((m) => ({ senderName: m.senderName, content: m.content } as CircleMessageInput))
+          .map((m) => ({ senderName: m.senderName, content: m.content }))
       : [];
 
     if (!circleId) {
@@ -897,7 +1168,7 @@ app.post("/v1/circles/intervene", async (req, res) => {
       return;
     }
 
-    const circleData = circleSnap.data() as { members?: string[] };
+    const circleData = circleSnap.data() || {};
     if (!Array.isArray(circleData.members) || !circleData.members.includes(uid)) {
       res.status(403).json({ error: "not_circle_member" });
       return;
@@ -944,7 +1215,7 @@ app.post("/v1/circles/activity", async (req, res) => {
     const recentMessages = Array.isArray(body.recentMessages)
       ? body.recentMessages
           .filter((m) => m && typeof m === "object" && typeof m.senderName === "string" && typeof m.content === "string")
-          .map((m) => ({ senderName: m.senderName, content: m.content } as CircleMessageInput))
+          .map((m) => ({ senderName: m.senderName, content: m.content }))
       : [];
 
     if (!circleId) {
@@ -960,7 +1231,7 @@ app.post("/v1/circles/activity", async (req, res) => {
       return;
     }
 
-    const circleData = circleSnap.data() as { members?: string[] };
+    const circleData = circleSnap.data() || {};
     if (!Array.isArray(circleData.members) || !circleData.members.includes(uid)) {
       res.status(403).json({ error: "not_circle_member" });
       return;
@@ -1002,7 +1273,7 @@ app.post("/v1/circles/resume", async (req, res) => {
       return;
     }
 
-    const circleData = circleSnap.data() as { createdBy?: string };
+    const circleData = circleSnap.data() || {};
     if (circleData.createdBy !== uid) {
       res.status(403).json({ error: "only_creator_can_resume" });
       return;
@@ -1020,40 +1291,10 @@ app.post("/v1/circles/resume", async (req, res) => {
   }
 });
 
-const port = Number.parseInt(String(process.env.SELF_LOCAL_PORT || 8788), 10);
-
-async function checkExistingGovernanceServer(targetPort: number): Promise<boolean> {
-  try {
-    const response = await fetch(`http://localhost:${targetPort}/health`);
-    if (!response.ok) return false;
-    const json = await response.json().catch(() => null) as { ok?: boolean } | null;
-    return Boolean(json?.ok);
-  } catch {
-    return false;
-  }
-}
-
-const server = app.listen(port, () => {
+const port = parsePositiveIntEnv("PORT", parsePositiveIntEnv("SELF_LOCAL_PORT", 8788));
+app.listen(port, () => {
   const firebaseAdmin = getFirebaseAdminInitHealth();
-  console.log(`[local-governance] listening on http://localhost:${port}`);
-  console.log(`[local-governance] health: http://localhost:${port}/health`);
-  console.log(`[local-governance] firebase-admin init=${firebaseAdmin.initialized} mode=${firebaseAdmin.mode}`);
-});
-
-server.on("error", async (error: NodeJS.ErrnoException) => {
-  if (error.code !== "EADDRINUSE") {
-    console.error("[local-governance] failed to start:", error);
-    process.exit(1);
-    return;
-  }
-
-  const alreadyRunning = await checkExistingGovernanceServer(port);
-  if (alreadyRunning) {
-    console.log(`[local-governance] port ${port} already has a healthy governance server; reusing existing instance.`);
-    process.exit(0);
-    return;
-  }
-
-  console.error(`[local-governance] port ${port} is in use by a non-governance process. Set SELF_LOCAL_PORT to a free port.`);
-  process.exit(1);
+  console.log(`[serenix-governance-cloudrun] listening on port ${port}`);
+  console.log(`[serenix-governance-cloudrun] upstream=${selfUpstreamBaseUrl || "(not configured)"}`);
+  console.log(`[serenix-governance-cloudrun] firebase-admin init=${firebaseAdmin.initialized} mode=${firebaseAdmin.mode}`);
 });

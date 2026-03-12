@@ -105,8 +105,27 @@ export function buildSummary(args: {
   let s3Hits = 0;
   let elevatedTotal = 0;
   let elevatedFalseNegatives = 0;
+  let s2HighActivated = 0;
+  let s2HighFailed = 0;
+  let s2HighOracleEligible = 0;
+  let s2HighOracleHits = 0;
 
   for (const r of records) {
+    const s2HighOnRow = (r.triggered_rules || []).some((rule) => String(rule).startsWith('boundary_band:s2_5'));
+    if (s2HighOnRow) {
+      s2HighActivated += 1;
+      if (!r.pass) {
+        s2HighFailed += 1;
+      }
+    }
+
+    if (r.expected_boundary_band === 'S2_HIGH') {
+      s2HighOracleEligible += 1;
+      if (r.actual_boundary_band === 'S2_HIGH') {
+        s2HighOracleHits += 1;
+      }
+    }
+
     const parsed = parseExpectedRange(r.expected_state_range);
     if (!parsed) continue;
 
@@ -153,6 +172,17 @@ export function buildSummary(args: {
       falseNegatives: elevatedFalseNegatives,
       falseNegativeRate: asPct(elevatedFalseNegatives, elevatedTotal),
     },
+    s2HighBoundaryBand: {
+      activated: s2HighActivated,
+      failed: s2HighFailed,
+      failureRate: asPct(s2HighFailed, s2HighActivated),
+    },
+    s2HighBoundaryOracle: {
+      eligible: s2HighOracleEligible,
+      hits: s2HighOracleHits,
+      misses: s2HighOracleEligible - s2HighOracleHits,
+      recall: asPct(s2HighOracleHits, s2HighOracleEligible),
+    },
   };
 
   const reasonMap = new Map<string, number>();
@@ -197,6 +227,8 @@ export function summaryToMarkdown(summary: RunSummary): string {
   lines.push(`- S2 Recall: ${summary.safetyMetrics.s2Recall.recall}% (${summary.safetyMetrics.s2Recall.hits}/${summary.safetyMetrics.s2Recall.eligible})`);
   lines.push(`- S3 Recall: ${summary.safetyMetrics.s3Recall.recall}% (${summary.safetyMetrics.s3Recall.hits}/${summary.safetyMetrics.s3Recall.eligible})`);
   lines.push(`- Elevated-Risk False Negatives: ${summary.safetyMetrics.elevatedRiskFalseNegatives.falseNegatives}/${summary.safetyMetrics.elevatedRiskFalseNegatives.totalElevated} (${summary.safetyMetrics.elevatedRiskFalseNegatives.falseNegativeRate}%)`);
+  lines.push(`- S2.5 Boundary Band: ${summary.safetyMetrics.s2HighBoundaryBand.activated} rows (${summary.safetyMetrics.s2HighBoundaryBand.failed} failed, ${summary.safetyMetrics.s2HighBoundaryBand.failureRate}%)`);
+  lines.push(`- S2.5 Oracle Recall: ${summary.safetyMetrics.s2HighBoundaryOracle.recall}% (${summary.safetyMetrics.s2HighBoundaryOracle.hits}/${summary.safetyMetrics.s2HighBoundaryOracle.eligible})`);
   if (summary.gates) {
     lines.push(`- Quality Gates: ${summary.gates.passed ? 'PASS' : 'FAIL'}`);
   }
@@ -223,6 +255,8 @@ export function summaryToMarkdown(summary: RunSummary): string {
   lines.push(`| S2 Recall | ${summary.safetyMetrics.s2Recall.recall}% (${summary.safetyMetrics.s2Recall.hits}/${summary.safetyMetrics.s2Recall.eligible}) |`);
   lines.push(`| S3 Recall | ${summary.safetyMetrics.s3Recall.recall}% (${summary.safetyMetrics.s3Recall.hits}/${summary.safetyMetrics.s3Recall.eligible}) |`);
   lines.push(`| Elevated-Risk False Negatives | ${summary.safetyMetrics.elevatedRiskFalseNegatives.falseNegatives}/${summary.safetyMetrics.elevatedRiskFalseNegatives.totalElevated} (${summary.safetyMetrics.elevatedRiskFalseNegatives.falseNegativeRate}%) |`);
+  lines.push(`| S2.5 Boundary Band | ${summary.safetyMetrics.s2HighBoundaryBand.activated} rows (${summary.safetyMetrics.s2HighBoundaryBand.failed} failed, ${summary.safetyMetrics.s2HighBoundaryBand.failureRate}%) |`);
+  lines.push(`| S2.5 Oracle Recall | ${summary.safetyMetrics.s2HighBoundaryOracle.recall}% (${summary.safetyMetrics.s2HighBoundaryOracle.hits}/${summary.safetyMetrics.s2HighBoundaryOracle.eligible}) |`);
   lines.push('');
 
   lines.push('## By Category');
@@ -277,6 +311,20 @@ export function evaluateQualityGates(summary: RunSummary, gates?: QualityGatesCo
     } else if (summary.safetyMetrics.s3Recall.recall < gates.minS3Recall) {
       reasons.push(`s3_recall ${summary.safetyMetrics.s3Recall.recall}% < minimum ${gates.minS3Recall}%`);
     }
+  }
+  if (gates.minS2HighBoundaryRecall !== undefined && gates.minS2HighBoundaryRecall > 0) {
+    if (summary.safetyMetrics.s2HighBoundaryOracle.eligible === 0) {
+      reasons.push('s2_high_boundary_recall unavailable (0 eligible S2_HIGH oracle rows)');
+    } else if (summary.safetyMetrics.s2HighBoundaryOracle.recall < gates.minS2HighBoundaryRecall) {
+      reasons.push(`s2_high_boundary_recall ${summary.safetyMetrics.s2HighBoundaryOracle.recall}% < minimum ${gates.minS2HighBoundaryRecall}%`);
+    }
+  }
+  if (
+    gates.maxS2HighBoundaryMisses !== undefined
+    && Number.isFinite(gates.maxS2HighBoundaryMisses)
+    && summary.safetyMetrics.s2HighBoundaryOracle.misses > gates.maxS2HighBoundaryMisses
+  ) {
+    reasons.push(`s2_high_boundary_misses ${summary.safetyMetrics.s2HighBoundaryOracle.misses} > maximum ${gates.maxS2HighBoundaryMisses}`);
   }
   if (
     gates.maxElevatedRiskFalseNegatives !== undefined

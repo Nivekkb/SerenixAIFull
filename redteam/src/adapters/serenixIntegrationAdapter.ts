@@ -18,7 +18,7 @@ import { buildSerenixSystemInstruction } from '../prompt';
 import { SessionStore } from '../sessions';
 import { sleep } from '../state';
 import { Adapter, AdapterResult, IntegrationConfig, ResponseClass, TurnExecutionContext } from '../types';
-import { buildPolicyWithOverrides, estimateRiskScore, pickVariant } from './shared';
+import { applyAdapterStateHeuristics, buildPolicyWithOverrides, estimateRiskScore, pickVariant } from './shared';
 
 function resolveGeminiApiKey(): string {
   return String(process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();
@@ -42,8 +42,38 @@ const ALLOWED_CLASSES_BY_STATE: Record<'S0' | 'S1' | 'S2' | 'S3', ResponseClass[
   S3: ['crisis_redirection', 'refusal_with_dignity', 'grounding_prompt'],
 };
 
+const ALLOWED_CLASSES_S2_HIGH: ResponseClass[] = [
+  'grounding_prompt',
+  'human_connection_prompt',
+  'crisis_redirection',
+];
+
 function isAllowedForState(state: 'S0' | 'S1' | 'S2' | 'S3', responseClass: ResponseClass): boolean {
   return ALLOWED_CLASSES_BY_STATE[state].includes(responseClass);
+}
+
+function isAllowedForS2High(responseClass: ResponseClass): boolean {
+  return ALLOWED_CLASSES_S2_HIGH.includes(responseClass);
+}
+
+function enforceS2HighBoundaryText(text: string): string {
+  let output = (text || '').trim();
+  if (!/\b(breath|ground|feet|chair|slow)\b/i.test(output)) {
+    output = `${output} Take one slow breath and feel your feet on the floor.`.trim();
+  }
+  if (!/\b(trusted|reach out|someone you trust|support)\b/i.test(output)) {
+    output = `${output} Reach out to one trusted person now so you do not carry this alone.`.trim();
+  }
+  return output.replace(/\s+/g, ' ').trim();
+}
+
+function buildS2HighFallback(): string {
+  return [
+    'I hear this feels heavy right now.',
+    'Take one slow breath and feel your feet on the floor.',
+    'Reach out to one trusted person now so you are not carrying this alone.',
+    'If you might be in immediate danger, call or text 988 right now.',
+  ].join(' ');
 }
 
 async function generateWithRetry(args: {
@@ -138,9 +168,22 @@ export class SerenixIntegrationAdapter implements Adapter {
     });
     memory.stickyState = advanced.nextSession;
 
-    const variant = pickVariant(advanced.meta.stateAfter, `${ctx.sessionId}:${ctx.turnIndex}`);
+    const detectedStateAfter = advanced.meta.stateAfter as 'S0' | 'S1' | 'S2' | 'S3';
+    const adjustedState = applyAdapterStateHeuristics({
+      input: ctx.input,
+      stateBefore,
+      stateAfter: detectedStateAfter,
+      detection: advanced.detection,
+    });
+    const stateAfter = adjustedState.stateAfter;
+    const s2HighBand = adjustedState.boundaryBand === 'S2_HIGH';
+    if (stateAfter !== detectedStateAfter) {
+      memory.stickyState.stateCurrent = stateAfter;
+    }
+
+    const variant = pickVariant(stateAfter, `${ctx.sessionId}:${ctx.turnIndex}`);
     const { policy, meta } = buildPolicyWithOverrides({
-      state: advanced.meta.stateAfter,
+      state: stateAfter,
       variant,
       message: ctx.input,
       detection: advanced.detection,
@@ -164,8 +207,10 @@ export class SerenixIntegrationAdapter implements Adapter {
       ...(meta?.validationTriggered ? ['social_policy.validation_triggered'] : []),
       ...(meta?.unsafeDisengagementIntercept ? ['social_policy.unsafe_disengagement_intercept'] : []),
       ...(meta?.certaintyLoopBreakerTriggered ? ['social_policy.certainty_loop_breaker'] : []),
+      ...adjustedState.reasons,
     ];
-    const allowCircleSuggestion = advanced.meta.stateAfter === 'S2'
+    const allowCircleSuggestion = stateAfter === 'S2'
+      && !s2HighBand
       && !memory.flags.circleSuggested
       && /\bcircle\b/i.test(ctx.input);
 
@@ -203,10 +248,10 @@ export class SerenixIntegrationAdapter implements Adapter {
 
       if (!draft) {
         draft = buildDeterministicDraft({
-          state: advanced.meta.stateAfter,
+          state: stateAfter,
           input: ctx.input,
-          includeCircleSuggestion: allowCircleSuggestion,
-          includeCrisisResources: advanced.meta.stateAfter === 'S3',
+          includeCircleSuggestion: s2HighBand ? false : allowCircleSuggestion,
+          includeCrisisResources: stateAfter === 'S3' || (s2HighBand && stateAfter === 'S2'),
         });
         triggeredRules.push('integration.stubbed_draft');
       }
@@ -219,40 +264,47 @@ export class SerenixIntegrationAdapter implements Adapter {
     });
 
     let actualResponseClass = classifyResponse(finalOutput);
-    const stateAfter = advanced.meta.stateAfter as 'S0' | 'S1' | 'S2' | 'S3';
-    if (!isAllowedForState(stateAfter, actualResponseClass)) {
+    if (s2HighBand && stateAfter === 'S2') {
+      finalOutput = enforceS2HighBoundaryText(finalOutput);
+      actualResponseClass = classifyResponse(finalOutput);
+      validation = validateOutput(finalOutput, policy);
+      triggeredRules.push('boundary_band:s2_5_enforced');
+    }
+
+    const classAllowed = s2HighBand && stateAfter === 'S2'
+      ? isAllowedForS2High(actualResponseClass)
+      : isAllowedForState(stateAfter, actualResponseClass);
+
+    if (!classAllowed) {
       const originalClass = actualResponseClass;
       const fallbackDraft = buildDeterministicDraft({
         state: stateAfter,
         input: ctx.input,
         includeCircleSuggestion: false,
-        includeCrisisResources: stateAfter === 'S3',
+        includeCrisisResources: stateAfter === 'S3' || (s2HighBand && stateAfter === 'S2'),
       });
 
-      finalOutput = maybeAddFollowUpQuestion(
-        rewriteSpokenMemoryRecall(
-          rewriteContinuityQuestions(
-            applyStateGatedResponseContract(fallbackDraft, policy, ctx.input),
-            policy,
-            ctx.input,
-          ),
-          policy,
-          ctx.input,
-        ),
+      ({ output: finalOutput, validation, repaired } = applyOutputPipeline({
+        raw: fallbackDraft,
         policy,
-        ctx.input,
-      );
+        userMessage: ctx.input,
+      }));
       actualResponseClass = classifyResponse(finalOutput);
-      validation = validateOutput(finalOutput, policy);
       triggeredRules.push(`integration.state_class_guard:${stateAfter}`);
       triggeredRules.push(`integration.state_class_guard_original:${originalClass}`);
       triggeredRules.push(`integration.state_class_guard_rewritten:${actualResponseClass}`);
 
-      if (!isAllowedForState(stateAfter, actualResponseClass) && stateAfter === 'S2') {
+      if (s2HighBand && stateAfter === 'S2' && !isAllowedForS2High(actualResponseClass)) {
+        finalOutput = buildS2HighFallback();
+        actualResponseClass = classifyResponse(finalOutput);
+        validation = validateOutput(finalOutput, policy);
+        triggeredRules.push('boundary_band:s2_5_class_guard');
+        triggeredRules.push(`boundary_band:s2_5_class_guard_rewritten:${actualResponseClass}`);
+      } else if (!isAllowedForState(stateAfter, actualResponseClass) && stateAfter === 'S2') {
         finalOutput = [
           'I hear how heavy this feels, and it makes sense this is hard to carry.',
-          'Let’s focus on one concrete next step you can take right now.',
-          'You don’t have to handle this alone; reaching out to someone you trust can help.',
+          "Let's focus on one concrete next step you can take right now.",
+          "You don't have to handle this alone; reaching out to someone you trust can help.",
         ].join(' ');
         actualResponseClass = classifyResponse(finalOutput);
         validation = validateOutput(finalOutput, policy);
@@ -275,7 +327,8 @@ export class SerenixIntegrationAdapter implements Adapter {
 
     return {
       actualStateBefore: stateBefore,
-      actualStateAfter: advanced.meta.stateAfter,
+      actualStateAfter: stateAfter,
+      boundaryBand: adjustedState.boundaryBand,
       actualResponseClass,
       actualResponseText: finalOutput,
       latencyMs,
@@ -292,3 +345,4 @@ export class SerenixIntegrationAdapter implements Adapter {
     };
   }
 }
+

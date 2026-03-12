@@ -57,6 +57,21 @@ Expected:
 - Client A can resume successfully.
 - Pause clears for both clients.
 
+### Case 4: Private transcript persistence + export
+
+1. In settings, switch chat retention to `persistent`.
+2. In Sanctuary, send at least one user message and wait for one AI reply.
+3. Click `Download Transcript`.
+
+Expected:
+- Transcript JSON includes both user and AI messages.
+- AI rows include backend provenance fields when persisted through `/v1/private/respond`:
+  - `writtenBy`
+  - `writerService`
+  - `writerRoute`
+  - `writerGeneratedAt`
+- If backend persistence is unavailable, UI shows fallback warning and continues in-session safely.
+
 ## Optional quick backend checks
 
 Use browser DevTools Network tab on circle actions:
@@ -85,4 +100,5 @@ Firestore message provenance check:
 - Case 1 result:
 - Case 2 result:
 - Case 3 result:
+- Case 4 result:
 - Notes / defects:

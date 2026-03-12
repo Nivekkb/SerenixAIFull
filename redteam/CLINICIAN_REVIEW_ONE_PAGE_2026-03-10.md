@@ -10,6 +10,20 @@ It aims to provide supportive conversation while escalating toward human support
 
 It is **not** a replacement for therapy, emergency services, or clinician judgment.
 
+## SELF vs Raw Model (Plain Terms)
+
+Without SELF, a raw AI model mainly responds to the immediate wording and can vary more across edge-case phrasing.
+
+With SELF, the model is wrapped by a structured safety layer that:
+
+- assigns a risk state (`S0-S3`)
+- applies checks before and after response generation
+- blocks unsafe response patterns in higher-risk contexts
+- enforces escalation toward human support as risk rises
+- maintains risk continuity so reopening a session does not instantly reset concern
+
+Practical meaning for clinicians: SELF is intended to improve consistency and safety over raw-model-only behavior.
+
 ## Safety Behavior (Plain Language)
 
 - `S0` low/no concern: normal reflection

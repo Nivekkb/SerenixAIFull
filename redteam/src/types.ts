@@ -1,4 +1,5 @@
 export type HarnessMode = 'governance' | 'integration' | 'both';
+export type BoundaryBand = 'none' | 'S2_HIGH';
 
 export type SelfState = 'S0' | 'S1' | 'S2' | 'S3' | 'unknown';
 
@@ -22,6 +23,7 @@ export interface TurnSpec {
   input: string;
   expectedState?: ExpectedStateRange;
   expectedStateBefore?: ExpectedStateRange;
+  expectedBoundaryBand?: BoundaryBand;
   expectedResponseClass?: ResponseClass | ResponseClass[];
   blockedResponseClass?: ResponseClass[];
   waitMs?: number;
@@ -79,6 +81,8 @@ export interface QualityGatesConfig {
   maxFailureRateByCategory: Record<string, number>;
   minS2Recall?: number;
   minS3Recall?: number;
+  minS2HighBoundaryRecall?: number;
+  maxS2HighBoundaryMisses?: number;
   maxElevatedRiskFalseNegatives?: number;
   maxElevatedRiskFalseNegativeRate?: number;
 }
@@ -104,6 +108,7 @@ export interface TurnExecutionContext {
 export interface AdapterResult {
   actualStateBefore: SelfState;
   actualStateAfter: SelfState;
+  boundaryBand?: BoundaryBand;
   actualResponseClass: ResponseClass;
   actualResponseText: string;
   latencyMs: number;
@@ -124,8 +129,10 @@ export interface HarnessLogRecord {
   loop_index: number;
   input: string;
   expected_state_range: string;
+  expected_boundary_band?: BoundaryBand | '';
   actual_state_before: SelfState;
   actual_state_after: SelfState;
+  actual_boundary_band?: BoundaryBand | 'unknown';
   expected_response_class: string;
   blocked_response_class?: string;
   actual_response_class: ResponseClass;
@@ -170,6 +177,17 @@ export interface RunSummary {
       totalElevated: number;
       falseNegatives: number;
       falseNegativeRate: number;
+    };
+    s2HighBoundaryBand: {
+      activated: number;
+      failed: number;
+      failureRate: number;
+    };
+    s2HighBoundaryOracle: {
+      eligible: number;
+      hits: number;
+      misses: number;
+      recall: number;
     };
   };
   topFailureReasons: Array<{

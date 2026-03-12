@@ -1,5 +1,6 @@
 import { motion } from 'motion/react';
 import { Sparkles, Heart, Users, Wind, Shield } from 'lucide-react';
+import SelfPoweredBadge from './SelfPoweredBadge';
 
 interface LandingProps {
   onLogin: () => void;
@@ -26,6 +27,9 @@ export default function Landing({ onLogin }: LandingProps) {
         <p className="mt-4 text-sm md:text-base text-serenix-ink/55 max-w-2xl mx-auto">
           SerenixAI supports reflection and next steps. It is not therapy or emergency care, and it cannot replace professional or personal support.
         </p>
+        <div className="mt-4">
+          <SelfPoweredBadge />
+        </div>
       </motion.div>
 
       <motion.div

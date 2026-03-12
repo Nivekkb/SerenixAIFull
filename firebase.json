@@ -15,7 +15,37 @@
     ],
     "frameworksBackend": {
       "region": "us-west1"
-    }
+    },
+    "rewrites": [
+      {
+        "source": "/v1/pre",
+        "run": {
+          "serviceId": "serenix-governance",
+          "region": "us-west1"
+        }
+      },
+      {
+        "source": "/v1/post",
+        "run": {
+          "serviceId": "serenix-governance",
+          "region": "us-west1"
+        }
+      },
+      {
+        "source": "/v1/circles/**",
+        "run": {
+          "serviceId": "serenix-governance",
+          "region": "us-west1"
+        }
+      },
+      {
+        "source": "/health-governance",
+        "run": {
+          "serviceId": "serenix-governance",
+          "region": "us-west1"
+        }
+      }
+    ]
   },
   "auth": {
     "providers": {
